@@ -1,6 +1,7 @@
 # Mixture-of-Agents in 50 lines of code
 import asyncio
 import os
+import together
 from together import AsyncTogether, Together
 
 client = Together(api_key=os.environ.get("TOGETHER_API_KEY"))
