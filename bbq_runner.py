@@ -170,6 +170,7 @@ async def main():
             "ans0": example["ans0"],
             "ans1": example["ans1"],
             "ans2": example["ans2"],
+            "answer_info": example["answer_info"],
         }
 
         correct_text = example[f"ans{example['label']}"]
