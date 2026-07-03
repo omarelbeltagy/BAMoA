@@ -1,6 +1,8 @@
 # Advanced Mixture-of-Agents example – 3 layers
 import asyncio
+import json
 import os
+from datetime import datetime
 from together import AsyncTogether, Together
 
 client = Together(api_key=os.environ.get("TOGETHER_API_KEY"))
@@ -50,25 +52,39 @@ async def run_llm(model, prev_response=None):
                 model=model,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=512,
+                max_tokens=1024,
             )
+            content = response.choices[0].message.content
+            if not content:
+                print(f"Warning: empty response from {model}, retrying...")
+                await asyncio.sleep(sleep_time)
+                continue
             print("Model: ", model)
-            return response.choices[0].message.content
+            return content
         except Exception as e:
             print(f"Error calling {model}: {e}")
             await asyncio.sleep(sleep_time)
+    print(f"Failed to get response from {model} after all retries")
     return None
 
 
 async def main():
     """Run the main loop of the MOA process."""
-    results = await asyncio.gather(*[run_llm(model) for model in reference_models])
+    run_log = {"question": user_prompt, "layers": {}}
 
-    for _ in range(1, layers - 1):
+    # Layer 1: proposers answer the raw question
+    results = await asyncio.gather(*[run_llm(model) for model in reference_models])
+    run_log["layers"]["layer_1"] = dict(zip(reference_models, results))
+
+    # Middle layers: each proposer also sees the previous layer's responses
+    for layer_idx in range(1, layers - 1):
         results = await asyncio.gather(
             *[run_llm(model, prev_response=results) for model in reference_models]
         )
+        run_log["layers"][f"layer_{layer_idx + 1}"] = dict(zip(reference_models, results))
 
+    # Final aggregation: accumulate streamed output so we can log it
+    final_response = ""
     finalStream = client.chat.completions.create(
         model=aggregator_model,
         messages=[
@@ -82,7 +98,17 @@ async def main():
     )
     for chunk in finalStream:
         if chunk.choices:
-            print(chunk.choices[0].delta.content or "", end="", flush=True)
+            content = chunk.choices[0].delta.content or ""
+            print(content, end="", flush=True)
+            final_response += content
+
+    run_log["final_response"] = final_response
+
+    os.makedirs("outputs/logs", exist_ok=True)
+    log_path = f"outputs/logs/run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(log_path, "w") as f:
+        json.dump(run_log, f, indent=2)
+    print(f"\n\nLog saved → {log_path}")
 
 
 asyncio.run(main())
