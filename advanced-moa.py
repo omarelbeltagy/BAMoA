@@ -104,8 +104,8 @@ async def main():
 
     run_log["final_response"] = final_response
 
-    os.makedirs("outputs/logs", exist_ok=True)
-    log_path = f"outputs/logs/run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    os.makedirs("outputs/raw", exist_ok=True)
+    log_path = f"outputs/raw/run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(log_path, "w") as f:
         json.dump(run_log, f, indent=2)
     print(f"\n\nLog saved → {log_path}")
