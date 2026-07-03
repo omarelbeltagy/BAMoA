@@ -109,22 +109,23 @@ def parse_answer(text):
     return None
 
 
-BBQ_CONFIGS = [
-    "Age", "Disability_status", "Gender_identity", "Nationality",
-    "Physical_appearance", "Race_ethnicity", "Race_x_SES", "Race_x_gender",
-    "Religion", "SES", "Sexual_orientation",
-]
-
-
 def load_bbq():
-    """Load BBQ from HuggingFace auto-converted parquet files (bypasses legacy dataset script)."""
+    """Load all BBQ configs from HuggingFace parquet files, discovering configs dynamically."""
+    from huggingface_hub import list_repo_files
+
+    parquet_files = list(list_repo_files(
+        "heegyu/bbq", repo_type="dataset", revision="refs/convert/parquet"
+    ))
+    configs = sorted(set(f.split("/")[0] for f in parquet_files if f.endswith(".parquet")))
+    print(f"Found {len(configs)} BBQ categories: {configs}")
+
     splits = []
-    for config in BBQ_CONFIGS:
-        url = (
-            "https://huggingface.co/datasets/heegyu/bbq/resolve/"
-            f"refs%2Fconvert%2Fparquet/{config}/test/0000.parquet"
+    for config in configs:
+        ds = load_dataset(
+            "parquet",
+            data_files={"test": f"hf://datasets/heegyu/bbq@refs%2Fconvert%2Fparquet/{config}/test/0000.parquet"},
+            split="test",
         )
-        ds = load_dataset("parquet", data_files={"test": url}, split="test")
         splits.append(ds)
     return concatenate_datasets(splits)
 
