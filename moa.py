@@ -45,6 +45,7 @@ async def main():
         stream=True,
     )
     for chunk in finalStream:
-        print(chunk.choices[0].delta.content or "", end="", flush=True)
+        if chunk.choices:
+            print(chunk.choices[0].delta.content or "", end="", flush=True)
 
 asyncio.run(main())
