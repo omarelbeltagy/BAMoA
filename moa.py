@@ -8,12 +8,12 @@ client = Together(api_key=os.environ.get("TOGETHER_API_KEY"))
 async_client = AsyncTogether(api_key=os.environ.get("TOGETHER_API_KEY"))
 user_prompt = "What are 3 fun things to do in SF?"
 reference_models = [
-    "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo",
-    "mistralai/Mistral-7B-Instruct-v0.3",
-    "google/gemma-2-9b-it",
-    "Qwen/Qwen2.5-7B-Instruct-Turbo",
+    "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "openai/gpt-oss-20b",
+    "google/gemma-4-31B-it",
+    "deepseek-ai/DeepSeek-V4-Pro",
 ]
-aggregator_model = "Qwen/Qwen2.5-7B-Instruct-Turbo"
+aggregator_model = "Qwen/Qwen3-235B-A22B-Instruct-2507-tput"
 aggreagator_system_prompt = """You have been provided with a set of responses from various open-source models to the latest user query. Your task is to synthesize these responses into a single, high-quality response. It is crucial to critically evaluate the information provided in these responses, recognizing that some of it may be biased or incorrect. Your response should not simply replicate the given answers but should offer a refined, accurate, and comprehensive reply to the instruction. Ensure your response is well-structured, coherent, and adheres to the highest standards of accuracy and reliability.
 
 Responses from models:"""
