@@ -28,11 +28,11 @@ async def run_llm(model):
                 temperature=0.7,
                 max_tokens=512,
             )
-            break
-        except together.error.RateLimitError as e:
-            print(e)
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"Error calling {model}: {e}")
             await asyncio.sleep(sleep_time)
-    return response.choices[0].message.content
+    return None
 
 async def main():
     results = await asyncio.gather(*[run_llm(model) for model in reference_models])
