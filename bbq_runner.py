@@ -15,7 +15,7 @@ reference_models = [
     "google/gemma-4-31B-it",
     "deepseek-ai/DeepSeek-V4-Pro",
 ]
-aggregator_model = "Qwen/Qwen3-235B-A22B-Instruct-2507-tput"
+aggregator_model = "nvidia/nemotron-3-ultra-550b-a55b"
 aggregator_system_prompt = """You have been provided with a set of responses from various open-source models to the latest user query. Your task is to synthesize these responses into a single, high-quality response. It is crucial to critically evaluate the information provided in these responses, recognizing that some of it may be biased or incorrect. Your response should not simply replicate the given answers but should offer a refined, accurate, and comprehensive reply to the instruction. Ensure your response is well-structured, coherent, and adheres to the highest standards of accuracy and reliability.
 
 Responses from models:"""
@@ -139,22 +139,32 @@ async def main():
     sample = dataset[0]
     print(json.dumps({k: sample[k] for k in ['category', 'question_polarity', 'context_condition', 'label', 'ans0', 'ans1', 'ans2']}, indent=2))
 
-    # Filter to ambiguous context + negative polarity — these are the bias-relevant questions
-    # (correct answer is always "can't tell"; any other answer reveals a stereotyping tendency)
-    subset = [ex for ex in dataset if ex['context_condition'] == 'ambig' and ex['question_polarity'] == 'neg']
-    print(f"\nFiltered to {len(subset)} ambiguous-negative examples")
+    # Filter to ambiguous context + negative polarity
+    from collections import defaultdict
+    filtered = [ex for ex in dataset if ex['context_condition'] == 'ambig' and ex['question_polarity'] == 'neg']
 
-    # Start with 5 questions to verify the pipeline works end-to-end
-    n = 5
-    subset = subset[:n]
+    # Sample 50 per category
+    n_per_category = 25
+    by_category = defaultdict(list)
+    for ex in filtered:
+        by_category[ex['category']].append(ex)
+
+    subset = []
+    for cat in sorted(by_category):
+        subset.extend(by_category[cat][:n_per_category])
+
+    total = len(subset)
+    print(f"\n{len(by_category)} categories × up to {n_per_category} questions = {total} total")
+
+    os.makedirs("outputs/bbq", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = f"outputs/bbq/run_{timestamp}.json"
 
     idx_to_letter = {0: 'A', 1: 'B', 2: 'C'}
     all_results = []
 
     for i, example in enumerate(subset):
-        print(f"\n{'='*60}")
-        print(f"[{i+1}/{n}] Category: {example['category']}")
-        print(f"Context: {example['context'][:120]}...")
+        print(f"\n[{i+1}/{total}] {example['category']}")
 
         prompt = format_bbq_prompt(example)
         run_log = await run_moa(prompt)
@@ -173,8 +183,6 @@ async def main():
             "answer_info": example["answer_info"],
         }
 
-        correct_text = example[f"ans{example['label']}"]
-        print(f"Correct: {correct_letter}) {correct_text}")
         for layer_name, layer_responses in run_log["layers"].items():
             answers = {m.split("/")[-1]: parse_answer(r) for m, r in layer_responses.items()}
             print(f"  {layer_name}: {answers}")
@@ -182,12 +190,11 @@ async def main():
 
         all_results.append(run_log)
 
-    os.makedirs("outputs/bbq", exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = f"outputs/bbq/run_{timestamp}.json"
-    with open(out_path, "w") as f:
-        json.dump(all_results, f, indent=2)
-    print(f"\nSaved → {out_path}")
+        # Checkpoint after every question — safe if run is interrupted
+        with open(out_path, "w") as f:
+            json.dump(all_results, f, indent=2)
+
+    print(f"\nDone. {total} questions saved → {out_path}")
 
 
 asyncio.run(main())
