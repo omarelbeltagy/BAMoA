@@ -5,6 +5,8 @@ import os
 from datetime import datetime
 from datasets import load_dataset, concatenate_datasets
 from together import AsyncTogether, Together
+import random
+from collections import defaultdict
 
 client = Together(api_key=os.environ.get("TOGETHER_API_KEY"))
 async_client = AsyncTogether(api_key=os.environ.get("TOGETHER_API_KEY"))
@@ -21,6 +23,37 @@ aggregator_system_prompt = """You have been provided with a set of responses fro
 Responses from models:"""
 layers = 3
 
+def stratified_sample(dataset, n_per_cell=6, seed=42):
+    """
+    Sample roughly evenly across (category, context_condition, question_polarity)
+    cells, instead of filtering to one condition and taking the first N per
+    category. Uses random sampling within each cell (not the first N in dataset
+    order) to avoid any ordering bias (e.g. templates or names sub-groups
+    clustered together in the source data).
+
+    Returns the sampled list plus a report dict of cell -> actual count taken,
+    so shortfalls (a cell with fewer than n_per_cell available) are visible.
+    """
+    rng = random.Random(seed)
+
+    cells = defaultdict(list)
+    for ex in dataset:
+        key = (ex["category"], ex["context_condition"], ex["question_polarity"])
+        cells[key].append(ex)
+
+    subset = []
+    report = {}
+    for key in sorted(cells):
+        pool = cells[key]
+        take = min(n_per_cell, len(pool))
+        if take < n_per_cell:
+            print(f"  WARNING: cell {key} has only {len(pool)} examples (< {n_per_cell} requested)")
+        sampled = rng.sample(pool, take)
+        subset.extend(sampled)
+        report[key] = take
+
+    rng.shuffle(subset)  # avoid cell-grouped ordering in the output file
+    return subset, report
 
 def get_system_prompt_with_references(prev_responses):
     return (
@@ -139,22 +172,17 @@ async def main():
     sample = dataset[0]
     print(json.dumps({k: sample[k] for k in ['category', 'question_polarity', 'context_condition', 'label', 'ans0', 'ans1', 'ans2']}, indent=2))
 
-    # Filter to ambiguous context + negative polarity
-    from collections import defaultdict
-    filtered = [ex for ex in dataset if ex['context_condition'] == 'ambig' and ex['question_polarity'] == 'neg']
-
-    # Sample 50 per category
-    n_per_category = 25
-    by_category = defaultdict(list)
-    for ex in filtered:
-        by_category[ex['category']].append(ex)
-
-    subset = []
-    for cat in sorted(by_category):
-        subset.extend(by_category[cat][:n_per_category])
-
+    # Stratified sample across category × context_condition × question_polarity.
+    # 11 categories × 2 context conditions × 2 polarities = 44 cells.
+    # n_per_cell=6 → 264 total (within the 200-300 target range).
+    N_PER_CELL = 6
+    subset, cell_report = stratified_sample(dataset, n_per_cell=N_PER_CELL)
     total = len(subset)
-    print(f"\n{len(by_category)} categories × up to {n_per_category} questions = {total} total")
+    n_cells = len(cell_report)
+    n_full_cells = sum(1 for v in cell_report.values() if v == N_PER_CELL)
+    print(f"\n{n_cells} cells (category × context × polarity), "
+          f"{n_full_cells}/{n_cells} fully sampled at {N_PER_CELL} each")
+    print(f"Total questions: {total}")
 
     os.makedirs("outputs/bbq", exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
