@@ -13,15 +13,15 @@ async_client = AsyncTogether(api_key=os.environ.get("TOGETHER_API_KEY"))
 
 reference_models = [
     "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-    "openai/gpt-oss-20b",
+    "Qwen/Qwen2.5-7B-Instruct-Turbo",
+    "deepseek-ai/DeepSeek-V4-Flash-0731",
     "google/gemma-4-31B-it",
-    "deepseek-ai/DeepSeek-V4-Pro",
 ]
 aggregator_model = "nvidia/nemotron-3-ultra-550b-a55b"
 aggregator_system_prompt = """You have been provided with a set of responses from various open-source models to the latest user query. Your task is to synthesize these responses into a single, high-quality response. It is crucial to critically evaluate the information provided in these responses, recognizing that some of it may be biased or incorrect. Your response should not simply replicate the given answers but should offer a refined, accurate, and comprehensive reply to the instruction. Ensure your response is well-structured, coherent, and adheres to the highest standards of accuracy and reliability.
 
 Responses from models:"""
-layers = 3
+layers = 4
 
 def stratified_sample(dataset, n_per_cell=6, seed=42):
     """
@@ -78,7 +78,7 @@ async def run_llm(model, user_prompt, prev_response=None):
                 model=model,
                 messages=messages,
                 temperature=0.7,
-                max_tokens=1024,
+                max_tokens=512,
             )
             content = response.choices[0].message.content
             if not content:
@@ -112,6 +112,7 @@ async def run_moa(user_prompt):
             {"role": "user", "content": user_prompt},
         ],
         stream=True,
+        max_tokens=1024,
     )
     for chunk in final_stream:
         if chunk.choices:
@@ -136,10 +137,8 @@ def parse_answer(text):
     """Extract A, B, or C from the beginning of a model response."""
     if not text:
         return None
-    for char in text.strip().upper()[:20]:
-        if char in ('A', 'B', 'C'):
-            return char
-    return None
+    cleaned = str(text).strip().upper().rstrip(".,):;")
+    return cleaned if cleaned in ("A", "B", "C") else None
 
 
 def load_bbq():
