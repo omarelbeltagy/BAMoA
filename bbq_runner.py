@@ -4,25 +4,11 @@ import json
 import os
 from datetime import datetime
 from datasets import load_dataset, concatenate_datasets
-from together import AsyncTogether, Together
 import random
 import argparse
 from collections import defaultdict
+from moa_core import run_moa
 
-client = Together(api_key=os.environ.get("TOGETHER_API_KEY"))
-async_client = AsyncTogether(api_key=os.environ.get("TOGETHER_API_KEY"))
-
-reference_models = [
-    "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-    "Qwen/Qwen2.5-7B-Instruct-Turbo",
-    "deepseek-ai/DeepSeek-V4-Flash-0731",
-    "google/gemma-4-31B-it",
-]
-aggregator_model = "nvidia/nemotron-3-ultra-550b-a55b"
-aggregator_system_prompt = """You have been provided with a set of responses from various open-source models to the latest user query. Your task is to synthesize these responses into a single, high-quality response. It is crucial to critically evaluate the information provided in these responses, recognizing that some of it may be biased or incorrect. Your response should not simply replicate the given answers but should offer a refined, accurate, and comprehensive reply to the instruction. Ensure your response is well-structured, coherent, and adheres to the highest standards of accuracy and reliability.
-
-Responses from models:"""
-layers = 4
 
 def stratified_sample(dataset, n_per_cell=6, seed=42, exclude_ids=None):
     """
@@ -63,73 +49,6 @@ def stratified_sample(dataset, n_per_cell=6, seed=42, exclude_ids=None):
 
     rng.shuffle(subset)  # avoid cell-grouped ordering in the output file
     return subset, report
-
-def get_system_prompt_with_references(prev_responses):
-    return (
-        aggregator_system_prompt
-        + "\n"
-        + "\n".join([f"{i+1}. {str(r)}" for i, r in enumerate(prev_responses)])
-    )
-
-
-async def run_llm(model, user_prompt, prev_response=None):
-    for sleep_time in [1, 2, 4]:
-        try:
-            messages = (
-                [
-                    {"role": "system", "content": get_system_prompt_with_references(prev_response)},
-                    {"role": "user", "content": user_prompt},
-                ]
-                if prev_response
-                else [{"role": "user", "content": user_prompt}]
-            )
-            response = await async_client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=512,
-            )
-            content = response.choices[0].message.content
-            if not content:
-                await asyncio.sleep(sleep_time)
-                continue
-            return content
-        except Exception as e:
-            print(f"  Error [{model.split('/')[-1]}]: {e}")
-            await asyncio.sleep(sleep_time)
-    return None
-
-
-async def run_moa(user_prompt):
-    """Run the full MoA pipeline on a single prompt and return per-layer responses."""
-    run_log = {"question": user_prompt, "layers": {}}
-
-    results = await asyncio.gather(*[run_llm(model, user_prompt) for model in reference_models])
-    run_log["layers"]["layer_1"] = dict(zip(reference_models, results))
-
-    for layer_idx in range(1, layers - 1):
-        results = await asyncio.gather(
-            *[run_llm(model, user_prompt, prev_response=results) for model in reference_models]
-        )
-        run_log["layers"][f"layer_{layer_idx + 1}"] = dict(zip(reference_models, results))
-
-    final_response = ""
-    final_stream = client.chat.completions.create(
-        model=aggregator_model,
-        messages=[
-            {"role": "system", "content": get_system_prompt_with_references(results)},
-            {"role": "user", "content": user_prompt},
-        ],
-        stream=True,
-        max_tokens=1024,
-    )
-    for chunk in final_stream:
-        if chunk.choices:
-            final_response += chunk.choices[0].delta.content or ""
-
-    run_log["final_response"] = final_response
-    return run_log
-
 
 def format_bbq_prompt(example):
     return (
