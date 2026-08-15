@@ -6,6 +6,7 @@ from datetime import datetime
 from datasets import load_dataset, concatenate_datasets
 from together import AsyncTogether, Together
 import random
+import argparse
 from collections import defaultdict
 
 client = Together(api_key=os.environ.get("TOGETHER_API_KEY"))
@@ -163,6 +164,25 @@ def load_bbq():
 
 
 async def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--continue", dest="continue_path", metavar="PATH", default=None,
+        help="Path to an existing outputs/bbq/run_*.json file to resume from. "
+             "Already-completed questions (matched by example_id) are skipped "
+             "and new results are appended to the same file.",
+    )
+    args = parser.parse_args()
+
+    completed_ids = set()
+    all_results = []
+    out_path = None
+
+    if args.continue_path:
+        with open(args.continue_path) as f:
+            all_results = json.load(f)
+        completed_ids = {r["bbq_metadata"]["example_id"] for r in all_results}
+        out_path = args.continue_path
+        print(f"Resuming from {out_path}: {len(completed_ids)} questions already completed.")
     print("Loading BBQ dataset...")
     dataset = load_bbq()
     print(f"Loaded {len(dataset)} total examples")
@@ -183,15 +203,15 @@ async def main():
           f"{n_full_cells}/{n_cells} fully sampled at {N_PER_CELL} each")
     print(f"Total questions: {total}")
 
-    os.makedirs("outputs/bbq", exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = f"outputs/bbq/run_{timestamp}.json"
+    remaining = [ex for ex in subset if ex.get("example_id") not in completed_ids]
+    skipped = total - len(remaining)
+    if skipped:
+        print(f"Skipping {skipped} already-completed questions, {len(remaining)} remaining.")
 
     idx_to_letter = {0: 'A', 1: 'B', 2: 'C'}
-    all_results = []
 
-    for i, example in enumerate(subset):
-        print(f"\n[{i+1}/{total}] {example['category']}")
+    for i, example in enumerate(remaining):
+        print(f"\n[{len(completed_ids) + i + 1}/{total}] {example['category']}")
 
         prompt = format_bbq_prompt(example)
         run_log = await run_moa(prompt)
