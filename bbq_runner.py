@@ -24,7 +24,7 @@ aggregator_system_prompt = """You have been provided with a set of responses fro
 Responses from models:"""
 layers = 4
 
-def stratified_sample(dataset, n_per_cell=6, seed=42):
+def stratified_sample(dataset, n_per_cell=6, seed=42, exclude_ids=None):
     """
     Sample roughly evenly across (category, context_condition, question_polarity)
     cells, instead of filtering to one condition and taking the first N per
@@ -32,13 +32,21 @@ def stratified_sample(dataset, n_per_cell=6, seed=42):
     order) to avoid any ordering bias (e.g. templates or names sub-groups
     clustered together in the source data).
 
+    exclude_ids: optional set of example_id values to exclude from the sampling
+    pool before drawing — used to top up an existing run with n_per_cell
+    *additional* questions per cell, without re-selecting anything already run.
+
     Returns the sampled list plus a report dict of cell -> actual count taken,
     so shortfalls (a cell with fewer than n_per_cell available) are visible.
     """
+
     rng = random.Random(seed)
+    exclude_ids = exclude_ids or set()
 
     cells = defaultdict(list)
     for ex in dataset:
+        if ex.get("example_id") in exclude_ids:
+            continue
         key = (ex["category"], ex["context_condition"], ex["question_polarity"])
         cells[key].append(ex)
 
@@ -171,16 +179,27 @@ async def main():
              "Already-completed questions (matched by example_id) are skipped "
              "and new results are appended to the same file.",
     )
+    parser.add_argument(
+        "--n-per-cell", type=int, default=20,
+        help="Target number of questions per (category, context, polarity) cell "
+             "for the current invocation. With --continue, this tops up each cell up to "
+             "this total (existing + new), not n_per_cell additional on top.",
+    )
     args = parser.parse_args()
 
     completed_ids = set()
     all_results = []
     out_path = None
+    completed_per_cell = defaultdict(int)
 
     if args.continue_path:
         with open(args.continue_path) as f:
             all_results = json.load(f)
         completed_ids = {r["bbq_metadata"]["example_id"] for r in all_results}
+        for r in all_results:
+            m = r["bbq_metadata"]
+            key = (m["category"], m["context_condition"], m["question_polarity"])
+            completed_per_cell[key] += 1
         out_path = args.continue_path
         print(f"Resuming from {out_path}: {len(completed_ids)} questions already completed.")
     print("Loading BBQ dataset...")
@@ -193,15 +212,43 @@ async def main():
 
     # Stratified sample across category × context_condition × question_polarity.
     # 11 categories × 2 context conditions × 2 polarities = 44 cells.
-    # n_per_cell=6 → 264 total (within the 200-300 target range).
-    N_PER_CELL = 6
-    subset, cell_report = stratified_sample(dataset, n_per_cell=N_PER_CELL)
-    total = len(subset)
-    n_cells = len(cell_report)
-    n_full_cells = sum(1 for v in cell_report.values() if v == N_PER_CELL)
-    print(f"\n{n_cells} cells (category × context × polarity), "
-          f"{n_full_cells}/{n_cells} fully sampled at {N_PER_CELL} each")
-    print(f"Total questions: {total}")
+    # e.g n_per_cell=6 → 264 total
+
+    N_PER_CELL = args.n_per_cell
+
+    if args.continue_path:
+        # Top up each cell individually to N_PER_CELL total.
+        cells_needed = defaultdict(list)
+        for ex in dataset:
+            if ex.get("example_id") in completed_ids:
+                continue
+            key = (ex["category"], ex["context_condition"], ex["question_polarity"])
+            cells_needed[key].append(ex)
+
+        rng = random.Random(42)
+        subset = []
+        for key in sorted(cells_needed):
+            need = max(0, N_PER_CELL - completed_per_cell.get(key, 0))
+            pool = cells_needed[key]
+            take = min(need, len(pool))
+            subset.extend(rng.sample(pool, take))
+        rng.shuffle(subset)
+        total = len(all_results) + len(subset)
+        print(f"Topping up to {N_PER_CELL}/cell: {len(subset)} new questions needed "
+              f"(on top of {len(completed_ids)} already done) → target total {total}")
+    else:
+        subset, cell_report = stratified_sample(dataset, n_per_cell=N_PER_CELL)
+        total = len(subset)
+        n_cells = len(cell_report)
+        n_full_cells = sum(1 for v in cell_report.values() if v == N_PER_CELL)
+        print(f"\n{n_cells} cells (category × context × polarity), "
+              f"{n_full_cells}/{n_cells} fully sampled at {N_PER_CELL} each")
+        print(f"Total questions: {total}")
+
+    if out_path is None:
+        os.makedirs("outputs/bbq", exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_path = f"outputs/bbq/run_{timestamp}.json"
 
     remaining = [ex for ex in subset if ex.get("example_id") not in completed_ids]
     skipped = total - len(remaining)
