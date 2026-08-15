@@ -58,18 +58,32 @@ def load_winobias_raw():
 
 def decode_correct_entity(coreference_clusters):
     """
-    coreference_clusters is 4 string ints representing two [start, end]
-    word-index pairs. The pair with start == end is the pronoun's own
-    position (single token); the other pair is the span of the entity the
-    pronoun correctly refers to. Verified against multiple examples
-    (including grammatically-unambiguous Type 2 sentences) before use.
+    coreference_clusters is a flat list of string ints representing
+    [start, end] word-index pairs — usually 2 pairs (4 values), but ~3.6%
+    of examples have 3 pairs (6 values), typically because the same
+    pronoun-referent appears twice (e.g. two occurrences of "her" both
+    pointing to the same entity). Pairs with start == end are pronoun
+    positions (single token); pairs with start != end are entity spans.
+
+    We require there to be exactly ONE entity-pair (multiple pronoun
+    occurrences of that same entity are fine and don't introduce
+    ambiguity). If there are 2+ entity-pairs, coreference_clusters doesn't
+    tell us which pronoun maps to which entity without further structure,
+    so we refuse to guess — caller should treat None as "skip this example".
     """
     ints = [int(x) for x in coreference_clusters]
-    pair_a, pair_b = (ints[0], ints[1]), (ints[2], ints[3])
-    if pair_a[0] == pair_a[1]:
-        pronoun_idx, (correct_start, correct_end) = pair_a[0], pair_b
-    else:
-        pronoun_idx, (correct_start, correct_end) = pair_b[0], pair_a
+    pairs = [(ints[i], ints[i + 1]) for i in range(0, len(ints), 2)]
+
+    pronoun_pairs = [p for p in pairs if p[0] == p[1]]
+    entity_pairs = [p for p in pairs if p[0] != p[1]]
+
+    if len(entity_pairs) != 1 or len(pronoun_pairs) < 1:
+        return None  # ambiguous or unexpected structure — skip, don't guess
+
+    correct_start, correct_end = entity_pairs[0]
+    # any pronoun_pair's position is a valid pronoun occurrence pointing at
+    # this same entity; take the first one found in the raw list
+    pronoun_idx = pronoun_pairs[0][0]
     return correct_start, correct_end, pronoun_idx
 
 
@@ -119,7 +133,7 @@ def extract_two_entities(tokens, correct_start, correct_end, pronoun_idx):
     correct_span = None
     distractor_span = None
     for span in first_two:
-        if span[1] == correct_end and span[0] <= correct_start <= span[1] + 1:
+        if span[0] == correct_start and span[1] == correct_end:
             correct_span = span
         else:
             distractor_span = span
@@ -138,7 +152,10 @@ def format_winobias_example(example):
     known-correct span (skipped rather than guessed at).
     """
     tokens = example["tokens"]
-    correct_start, correct_end, pronoun_idx = decode_correct_entity(example["coreference_clusters"])
+    decoded = decode_correct_entity(example["coreference_clusters"])
+    if decoded is None:
+        return None
+    correct_start, correct_end, pronoun_idx = decoded
     pronoun = tokens[pronoun_idx]
 
     result = extract_two_entities(tokens, correct_start, correct_end, pronoun_idx)
@@ -146,11 +163,15 @@ def format_winobias_example(example):
         return None
     correct_span, distractor_span = result
 
-    def span_text(span):
-        return " ".join(tokens[span[0]:span[1] + 1])
+    def span_text(span, lowercase_first=False):
+        text = " ".join(tokens[span[0]:span[1] + 1])
+        if lowercase_first:
+            text = text[0].lower() + text[1:]
+        return text
 
-    correct_text = span_text(correct_span)
-    distractor_text = span_text(distractor_span)
+
+    correct_text = span_text(correct_span, lowercase_first=(correct_span[0] != 0))
+    distractor_text = span_text(distractor_span, lowercase_first=(distractor_span[0] != 0))
     sentence = " ".join(tokens)
 
     # Preserve sentence order for answer positions (avoid always putting
@@ -228,11 +249,13 @@ async def main():
     all_results = []
     out_path = None
     completed_per_cell = defaultdict(int)
+    skipped_ids = set()
 
     if args.continue_path:
         with open(args.continue_path) as f:
             all_results = json.load(f)
         completed_ids = {r["winobias_metadata"]["example_id"] for r in all_results}
+        skipped_ids = set(all_results_meta.get("skipped_ids", [])) if False else set()
         for r in all_results:
             m = r["winobias_metadata"]
             key = (m["wb_type"], m["wb_condition"])
@@ -240,12 +263,37 @@ async def main():
         out_path = args.continue_path
         print(f"Resuming from {out_path}: {len(completed_ids)} already completed.")
 
-    subset, cell_report = stratified_sample_winobias(
-        dataset, n_per_cell=args.n_per_cell, exclude_ids=completed_ids
-    )
-    total = len(all_results) + len(subset)
-    print(f"\n{len(cell_report)} cells (wb_type × wb_condition), target {args.n_per_cell}/cell")
-    print(f"New questions this run: {len(subset)}, target total: {total}")
+    N_PER_CELL = args.n_per_cell
+
+    if args.continue_path:
+        # Top up each cell individually to N_PER_CELL total, same logic as
+        # bbq_runner.py — NOT n_per_cell additional on top of what exists.
+        cells_needed = defaultdict(list)
+        for i, ex in enumerate(dataset):
+            if i in completed_ids:
+                continue
+            key = (ex["wb_type"], ex["wb_condition"])
+            cells_needed[key].append((i, ex))
+
+        rng = random.Random(42)
+        subset = []
+        for key in sorted(cells_needed):
+            need = max(0, N_PER_CELL - completed_per_cell.get(key, 0))
+            pool = cells_needed[key]
+            take = min(need, len(pool))
+            subset.extend(rng.sample(pool, take))
+        rng.shuffle(subset)
+        total = len(all_results) + len(subset)
+        print(f"Topping up to {N_PER_CELL}/cell: {len(subset)} new questions needed "
+              f"(on top of {len(completed_ids)} already done) → target total {total}")
+    else:
+        subset, cell_report = stratified_sample_winobias(dataset, n_per_cell=N_PER_CELL)
+        total = len(subset)
+        n_cells = len(cell_report)
+        n_full_cells = sum(1 for v in cell_report.values() if v == N_PER_CELL)
+        print(f"\n{n_cells} cells (wb_type × wb_condition), "
+              f"{n_full_cells}/{n_cells} fully sampled at {N_PER_CELL} each")
+        print(f"Total questions: {total}")
 
     if out_path is None:
         os.makedirs("outputs/winobias", exist_ok=True)
