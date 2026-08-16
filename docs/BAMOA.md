@@ -74,4 +74,64 @@ python winobias_runner.py --continue outputs/winobias/run_<ts>.json --include-ty
 
 ---
 
-## Where output is saved
+- Filenames are timestamped at the start of a fresh run.
+- `--continue` writes to the **same file** it resumed from (no new file
+  created).
+- Files are checkpointed after every question — safe to `Ctrl+C` at any
+  point without losing completed data.
+- `app.py --fresh` (or a runner with no `--continue`) always creates a new
+  timestamped file rather than overwriting an existing one.
+
+### Output file structure
+
+Each file is a JSON list of question records:
+
+```json
+{
+  "question": "...",
+  "layers": {
+    "layer_1": {"<model>": "<response>", ...},
+    "layer_2": {...},
+    "layer_3": {...}
+  },
+  "final_response": "...",
+  "bbq_metadata": { ... }        // bbq_runner.py only
+  "winobias_metadata": { ... }   // winobias_runner.py only
+}
+```
+
+---
+
+## Scoring
+
+```bash
+python bbq_scorer.py outputs/bbq/run_<timestamp>.json
+python winobias_scorer.py outputs/winobias/run_<timestamp>.json
+```
+
+Both scorers can be run on a **partial/in-progress** output file (safe to
+run while a runner is still going in another terminal, since files are
+only ever appended to, not truncated) — copy the file first if you want to
+avoid any risk of reading mid-write:
+
+```bash
+cp outputs/bbq/run_<timestamp>.json /tmp/check.json
+python bbq_scorer.py /tmp/check.json
+```
+
+---
+
+## Typical workflow
+
+```bash
+# 1. Start a run
+python app.py --dataset winobias
+
+# 2. Stop anytime (Ctrl+C) — progress is saved
+
+# 3. Resume later — automatically continues the same file
+python app.py --dataset winobias
+
+# 4. Check results at any point
+python winobias_scorer.py outputs/winobias/run_<timestamp>.json
+```
