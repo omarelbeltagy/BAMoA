@@ -249,13 +249,11 @@ async def main():
     all_results = []
     out_path = None
     completed_per_cell = defaultdict(int)
-    skipped_ids = set()
 
     if args.continue_path:
         with open(args.continue_path) as f:
             all_results = json.load(f)
         completed_ids = {r["winobias_metadata"]["example_id"] for r in all_results}
-        skipped_ids = set(all_results_meta.get("skipped_ids", [])) if False else set()
         for r in all_results:
             m = r["winobias_metadata"]
             key = (m["wb_type"], m["wb_condition"])
@@ -337,4 +335,5 @@ async def main():
     print(f"\nDone. {len(all_results)} questions saved → {out_path}")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
