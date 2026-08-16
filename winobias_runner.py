@@ -233,7 +233,7 @@ def stratified_sample_winobias(dataset, cell_targets, seed=42, exclude_ids=None)
     return subset, report
 
 
-async def main():
+async def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--continue", dest="continue_path", metavar="PATH", default=None,
@@ -253,7 +253,7 @@ async def main():
              "only as a baseline check that models can do the task at all "
              "— not a primary bias-signal condition, hence no scaling flag.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     print("Loading WinoBias dataset...")
     dataset = load_winobias_raw()

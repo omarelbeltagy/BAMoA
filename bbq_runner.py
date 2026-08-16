@@ -90,7 +90,7 @@ def load_bbq():
     return concatenate_datasets(splits)
 
 
-async def main():
+async def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--continue", dest="continue_path", metavar="PATH", default=None,
@@ -104,7 +104,7 @@ async def main():
              "for the current invocation. With --continue, this tops up each cell up to "
              "this total (existing + new), not n_per_cell additional on top.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     completed_ids = set()
     all_results = []
@@ -210,4 +210,5 @@ async def main():
     print(f"\nDone. {total} questions saved → {out_path}")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
