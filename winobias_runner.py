@@ -198,10 +198,13 @@ def format_winobias_example(example):
     }
 
 
-def stratified_sample_winobias(dataset, n_per_cell=20, seed=42, exclude_ids=None):
+def stratified_sample_winobias(dataset, cell_targets, seed=42, exclude_ids=None):
     """
-    Stratify by (wb_type, wb_condition) — 2 types x 2 conditions = 4 cells,
-    matching the WinoBias paper's own T1-p / T1-a / T2-p / T2-a evaluation axes.
+    Stratify by (wb_type, wb_condition). cell_targets is a dict mapping
+    (wb_type, wb_condition) -> target count, so callers control exactly
+    which cells to sample and how much from each — e.g. Type 1 only by
+    default, with Type 2 added as a small fixed-size sanity check via
+    --include-type-2.
     """
     rng = random.Random(seed)
     exclude_ids = exclude_ids or set()
@@ -211,11 +214,13 @@ def stratified_sample_winobias(dataset, n_per_cell=20, seed=42, exclude_ids=None
         if i in exclude_ids:
             continue
         key = (ex["wb_type"], ex["wb_condition"])
-        cells[key].append((i, ex))
+        if key in cell_targets:
+            cells[key].append((i, ex))
 
     subset = []
     report = {}
-    for key in sorted(cells):
+    for key in sorted(cell_targets):
+        n_per_cell = cell_targets[key]
         pool = cells[key]
         take = min(n_per_cell, len(pool))
         if take < n_per_cell:
@@ -235,15 +240,32 @@ async def main():
         help="Path to an existing outputs/winobias/run_*.json file to resume from.",
     )
     parser.add_argument(
-        "--n-per-cell", type=int, default=20,
-        help="Target number of questions per (wb_type, wb_condition) cell. "
-             "With --continue, tops up each cell to this total.",
+        "--n-per-cell", type=int, default=196,
+        help="Target number of Type-1 questions per condition (pro/anti each). "
+             "Type 1 is the primary condition — no syntactic cue, requires "
+             "genuine world-knowledge/stereotype resolution. With --continue, "
+             "tops up each cell to this total.",
+    )
+    parser.add_argument(
+        "--include-type-2", action="store_true",
+        help="Also run a fixed 100-question Type-2 sanity check (50 pro / "
+             "50 anti). Type 2 is syntactically resolvable, so it serves "
+             "only as a baseline check that models can do the task at all "
+             "— not a primary bias-signal condition, hence no scaling flag.",
     )
     args = parser.parse_args()
 
     print("Loading WinoBias dataset...")
     dataset = load_winobias_raw()
     print(f"Loaded {len(dataset)} total examples")
+
+    CELL_TARGETS = {
+        ("type1", "pro"): args.n_per_cell,
+        ("type1", "anti"): args.n_per_cell,
+    }
+    if args.include_type_2:
+        CELL_TARGETS[("type2", "pro")] = 50
+        CELL_TARGETS[("type2", "anti")] = 50
 
     completed_ids = set()
     all_results = []
@@ -261,36 +283,36 @@ async def main():
         out_path = args.continue_path
         print(f"Resuming from {out_path}: {len(completed_ids)} already completed.")
 
-    N_PER_CELL = args.n_per_cell
 
     if args.continue_path:
-        # Top up each cell individually to N_PER_CELL total, same logic as
-        # bbq_runner.py — NOT n_per_cell additional on top of what exists.
+        # Top up each targeted cell individually to its CELL_TARGETS value,
+        # NOT additional on top of what exists.
         cells_needed = defaultdict(list)
         for i, ex in enumerate(dataset):
             if i in completed_ids:
                 continue
             key = (ex["wb_type"], ex["wb_condition"])
-            cells_needed[key].append((i, ex))
+            if key in CELL_TARGETS:
+                cells_needed[key].append((i, ex))
 
         rng = random.Random(42)
         subset = []
-        for key in sorted(cells_needed):
-            need = max(0, N_PER_CELL - completed_per_cell.get(key, 0))
-            pool = cells_needed[key]
+        for key in sorted(CELL_TARGETS):
+            need = max(0, CELL_TARGETS[key] - completed_per_cell.get(key, 0))
+            pool = cells_needed.get(key, [])
             take = min(need, len(pool))
             subset.extend(rng.sample(pool, take))
         rng.shuffle(subset)
         total = len(all_results) + len(subset)
-        print(f"Topping up to {N_PER_CELL}/cell: {len(subset)} new questions needed "
+        print(f"Topping up per cell targets {CELL_TARGETS}: {len(subset)} new questions needed "
               f"(on top of {len(completed_ids)} already done) → target total {total}")
     else:
-        subset, cell_report = stratified_sample_winobias(dataset, n_per_cell=N_PER_CELL)
+        subset, cell_report = stratified_sample_winobias(dataset, cell_targets=CELL_TARGETS)
         total = len(subset)
         n_cells = len(cell_report)
-        n_full_cells = sum(1 for v in cell_report.values() if v == N_PER_CELL)
-        print(f"\n{n_cells} cells (wb_type × wb_condition), "
-              f"{n_full_cells}/{n_cells} fully sampled at {N_PER_CELL} each")
+        n_full_cells = sum(1 for k, v in cell_report.items() if v == CELL_TARGETS[k])
+        print(f"\n{n_cells} cells targeted: {CELL_TARGETS}")
+        print(f"{n_full_cells}/{n_cells} fully sampled at their target")
         print(f"Total questions: {total}")
 
     if out_path is None:
