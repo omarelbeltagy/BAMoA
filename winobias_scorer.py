@@ -1,5 +1,5 @@
 # WinoBias scorer for BA-MoA
-# Usage: python score_winobias.py outputs/winobias/run_YYYYMMDD_HHMMSS.json
+# Usage: python winobias_scorer.py outputs/winobias/run_YYYYMMDD_HHMMSS.json
 #
 # Metric: Diff = accuracy_pro - accuracy_anti, the generative-model analogue
 # of Zhao et al. (2018)'s |Diff| (their gap between pro-stereotyped and

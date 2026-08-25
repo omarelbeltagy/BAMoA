@@ -1,5 +1,5 @@
 # Per-layer BBQ bias scorer for BA-MoA
-# Usage: python score.py outputs/bbq/run_YYYYMMDD_HHMMSS.json
+# Usage: python bbq_scorer.py outputs/bbq/run_YYYYMMDD_HHMMSS.json
 import json
 import sys
 from collections import defaultdict
