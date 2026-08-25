@@ -194,6 +194,7 @@ async def main(argv=None):
             "ans1": example["ans1"],
             "ans2": example["ans2"],
             "answer_info": example["answer_info"],
+            "additional_metadata": example.get("additional_metadata"),
         }
 
         for layer_name, layer_responses in run_log["layers"].items():
