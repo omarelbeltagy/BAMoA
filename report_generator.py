@@ -8,15 +8,18 @@
 # Output: reports/report_YYYYMMDD_HHMMSS.md
 import argparse
 import glob
+import json
 import os
 from datetime import datetime
 from collections import defaultdict
-
 from bbq_scorer import (
     score_responses_ambig,
     score_responses_disambig,
     directional_lean,
     bias_score_amb,
+    score_gap,
+    compute_gap,
+    gt_is_stereotype_consistent,
     MIN_VALID_N as BBQ_MIN_VALID_N,
 )
 from winobias_scorer import (
@@ -25,11 +28,20 @@ from winobias_scorer import (
     compute_diff as wb_compute_diff,
     MIN_VALID_N as WB_MIN_VALID_N,
 )
-
-import json
+from stats_utils import bootstrap_ci, paired_bootstrap_delta
 
 NULL_RATE_WARNING_THRESHOLD = 0.10  # flag rows with >10% null responses
 
+def fmt_pct(value):
+    return f"{value:.1%}" if value is not None else "N/A"
+
+
+def fmt_signed_pct(value):
+    return f"{value:+.1%}" if value is not None else "N/A"
+
+
+def null_flag(null_rate):
+    return " ⚠" if null_rate is not None and null_rate > NULL_RATE_WARNING_THRESHOLD else ""
 
 def find_latest_run(output_dir):
     """Return the most recent run_*.json in output_dir, or None."""
@@ -43,18 +55,120 @@ def load_run(path):
     with open(path) as f:
         return json.load(f)
 
+def fmt_ci(point, lo, hi, signed=True, pct=True):
+    """Render '−2.3% [−5.1%, +0.4%]'. N/A when the point estimate is None."""
+    if point is None:
+        return "N/A"
+    f = (lambda v: f"{v:+.1%}") if (signed and pct) else \
+        (lambda v: f"{v:.1%}") if pct else (lambda v: f"{v:+.3f}")
+    if lo is None or hi is None:
+        return f(point)
+    return f"{f(point)} [{f(lo)}, {f(hi)}]"
 
-def fmt_pct(value):
-    return f"{value:.1%}" if value is not None else "N/A"
+def make_wb_gap_metric_model(layer, model):
+    """Per-model WinoBias Gap, for bootstrap. Per-model n is small, so these
+    are the report's noisiest figures and most need intervals."""
+    def metric(qs):
+        if layer is None:
+            responses = [{model: q["final_response"]} for q in qs]
+        else:
+            responses = [{model: q["layers"][layer].get(model)} for q in qs]
+        overall, _ = wb_score_responses(responses, qs)
+        return wb_compute_diff(overall)[0]
+    return metric
+
+def make_gap_metric(layer):
+    """Gap for one layer, as a function of a question list (for bootstrap).
+    `layer` is a layer name, or None for the aggregator."""
+    def metric(qs):
+        if layer is None:
+            responses = [{"aggregator": q["final_response"]} for q in qs]
+        else:
+            responses = [q["layers"][layer] for q in qs]
+        overall, _ = score_gap(responses, qs)
+        return compute_gap(overall)[0]
+    return metric
+
+def wb_noise_floor(qs, n_seeds=200):
+    """
+    Empirical detectability baselines for WinoBias Gap at this sample size:
+      - random: a zero-sensitivity model; the spread is the noise floor
+      - always-A: a position-only model; nonzero Gap here is contamination
+        from correct_letter correlating with the pro/anti condition
+    """
+    import random as _r
+    from winobias_scorer import parse_answer  # noqa: F401
+
+    def gap_for(answer_fn, seed):
+        rng = _r.Random(seed)
+        responses = [{"synthetic": answer_fn(q, rng)} for q in qs]
+        overall, _ = wb_score_responses(responses, qs)
+        return wb_compute_diff(overall)[0]
+
+    gaps = [g for s in range(n_seeds)
+            if (g := gap_for(lambda q, rng: rng.choice(["A", "B"]), s)) is not None]
+    gaps.sort()
+    lo, hi = gaps[int(0.025 * len(gaps))], gaps[int(0.975 * len(gaps)) - 1]
+    always_a = gap_for(lambda q, rng: "A", 0)
+
+    return lo, hi, always_a
 
 
-def fmt_signed_pct(value):
-    return f"{value:+.1%}" if value is not None else "N/A"
+def make_sdis_metric(layer, polarity, is_ambig):
+    """s_DIS for one layer, as a function of a question list."""
+    scorer = score_responses_ambig if is_ambig else score_responses_disambig
+    def metric(qs):
+        if layer is None:
+            responses = [{"aggregator": q["final_response"]} for q in qs]
+        else:
+            responses = [q["layers"][layer] for q in qs]
+        overall, _, _ = scorer(responses, qs, polarity)
+        return directional_lean(overall["stereotyped"],
+                                overall["anti_stereotyped"])
+    return metric
 
+def bbq_gap_table(qs, layer_names, n_boot=500):
+    """Layer-wise Gap with bootstrap CIs, plus a paired L1-vs-aggregator delta."""
+    n_res = sum(1 for q in qs if gt_is_stereotype_consistent(q) is not None)
+    lines = [
+        f"\n**Gap (GT-conditioned)** — resolved: {n_res}/{len(qs)} "
+        f"({n_res/len(qs):.1%})\n",
+        "| Layer | acc (GT stereo-consistent) | acc (GT stereo-inconsistent) | Gap [95% CI] |",
+        "|---|---|---|---|",
+    ]
 
-def null_flag(null_rate):
-    return " ⚠" if null_rate is not None and null_rate > NULL_RATE_WARNING_THRESHOLD else ""
+    for layer in list(layer_names) + [None]:
+        name = "**final (aggregator)**" if layer is None else layer
+        metric = make_gap_metric(layer)
+        point, lo, hi = bootstrap_ci(qs, metric, n_boot=n_boot)
 
+        responses = ([{"aggregator": q["final_response"]} for q in qs]
+                     if layer is None else [q["layers"][layer] for q in qs])
+        overall, _ = score_gap(responses, qs)
+        _, acc_c, n_c, acc_a, n_a = compute_gap(overall)
+
+        lines.append(
+            f"| {name} | {fmt_pct(acc_c)} (n={n_c}) | {fmt_pct(acc_a)} (n={n_a}) "
+            f"| {fmt_ci(point, lo, hi)} |"
+        )
+
+    # Paired delta: same items through both layers, so pair the resample.
+    d, dlo, dhi = paired_bootstrap_delta(
+        qs, make_gap_metric(None), make_gap_metric(layer_names[0]), n_boot=n_boot)
+    lines.append(
+        f"\n**Aggregator − Layer 1 (paired):** {fmt_ci(d, dlo, dhi)}  "
+        f"— CI excluding zero indicates a real change across the stack.\n")
+    return "\n".join(lines)
+
+def make_wb_gap_metric(layer):
+    def metric(qs):
+        if layer is None:
+            responses = [{"aggregator": q["final_response"]} for q in qs]
+        else:
+            responses = [q["layers"][layer] for q in qs]
+        overall, _ = wb_score_responses(responses, qs)
+        return wb_compute_diff(overall)[0]
+    return metric
 
 # ─────────────────────────────────────────────────────────────────
 # BBQ report section
@@ -161,7 +275,12 @@ def generate_bbq_section(path):
                 else:
                     summary_rows.append(f"| {layer} | {fmt_pct(acc)} | {fmt_pct(row['null_rate'])}{flag} | N/A (n={row['n_valid']}) |")
             else:
-                s_dis_str = f"{row['s_dis']:.3f}" if row['s_dis'] is not None else "N/A"
+                if row['s_dis'] is not None:
+                    p, lo, hi = bootstrap_ci(qs, make_sdis_metric(layer, polarity, is_ambig),
+                                             n_boot=500)
+                    s_dis_str = fmt_ci(p, lo, hi, pct=False)
+                else:
+                    s_dis_str = "N/A"
                 if is_ambig:
                     s_amb_str = f"{row['s_amb']:.3f}" if row['s_amb'] is not None else "N/A"
                     summary_rows.append(f"| {layer} | {fmt_pct(acc)} | {fmt_pct(row['null_rate'])}{flag} | {s_dis_str} | {s_amb_str} |")
@@ -219,13 +338,20 @@ def generate_bbq_section(path):
             else:
                 summary_rows.append(f"| **final (aggregator)** | {fmt_pct(acc)} | {fmt_pct(row['null_rate'])}{flag} | N/A (n={row['n_valid']}) |")
         else:
-            s_dis_str = f"{row['s_dis']:.3f}" if row['s_dis'] is not None else "N/A"
+            if row['s_dis'] is not None:
+                p, lo, hi = bootstrap_ci(qs, make_sdis_metric(None, polarity, is_ambig),
+                                         n_boot=500)
+                s_dis_str = fmt_ci(p, lo, hi, pct=False)
+            else:
+                s_dis_str = "N/A"
             if is_ambig:
                 s_amb_str = f"{row['s_amb']:.3f}" if row['s_amb'] is not None else "N/A"
                 summary_rows.append(f"| **final (aggregator)** | {fmt_pct(acc)} | {fmt_pct(row['null_rate'])}{flag} | {s_dis_str} | {s_amb_str} |")
             else:
                 summary_rows.append(f"| **final (aggregator)** | {fmt_pct(acc)} | {fmt_pct(row['null_rate'])}{flag} | {s_dis_str} |")
         lines.append("\n".join(summary_rows))
+        if not is_ambig:
+            lines.append(bbq_gap_table(qs, layer_names))
         lines.append("\n".join(per_model_sections))
         lines.append("\n".join(category_sections))
 
@@ -266,7 +392,8 @@ def generate_winobias_type1_section(qs, layer_names):
         flag = null_flag(row["null_rate"])
         pro_str = fmt_pct(row["acc_pro"]) + f" (n={row['n_pro']})" if row["acc_pro"] is None else f"{row['acc_pro']:.1%} (n={row['n_pro']})"
         anti_str = fmt_pct(row["acc_anti"]) + f" (n={row['n_anti']})" if row["acc_anti"] is None else f"{row['acc_anti']:.1%} (n={row['n_anti']})"
-        diff_str = fmt_signed_pct(row["diff"])
+        p, lo, hi = bootstrap_ci(qs, make_wb_gap_metric(layer), n_boot=500)
+        diff_str = fmt_ci(p, lo, hi)
         rows.append(f"| {layer} | {pro_str} | {anti_str} | {diff_str} | {fmt_pct(row['null_rate'])}{flag} |")
 
         pm_rows = [f"\n**{layer} — per model**\n",
@@ -278,7 +405,9 @@ def generate_winobias_type1_section(qs, layer_names):
             m_null = conds["pro"]["null"] + conds["anti"]["null"]
             pro_str = f"{m_acc_pro:.1%} (n={m_n_pro})" if m_acc_pro is not None else f"N/A (n={m_n_pro})"
             anti_str = f"{m_acc_anti:.1%} (n={m_n_anti})" if m_acc_anti is not None else f"N/A (n={m_n_anti})"
-            diff_str = fmt_signed_pct(m_diff)
+            dmp, mlo, mhi = bootstrap_ci(qs, make_wb_gap_metric_model(layer, model),
+                                        n_boot=500)
+            diff_str = fmt_ci(dmp, mlo, mhi)
             pm_rows.append(f"| {short} | {pro_str} | {anti_str} | {diff_str} | {m_null} |")
         per_model_sections.append("\n".join(pm_rows))
 
@@ -289,9 +418,24 @@ def generate_winobias_type1_section(qs, layer_names):
     flag = null_flag(row["null_rate"])
     pro_str = f"{row['acc_pro']:.1%} (n={row['n_pro']})" if row["acc_pro"] is not None else f"N/A (n={row['n_pro']})"
     anti_str = f"{row['acc_anti']:.1%} (n={row['n_anti']})" if row["acc_anti"] is not None else f"N/A (n={row['n_anti']})"
-    rows.append(f"| **final (aggregator)** | {pro_str} | {anti_str} | {fmt_signed_pct(row['diff'])} | {fmt_pct(row['null_rate'])}{flag} |")
+    p, lo, hi = bootstrap_ci(qs, make_wb_gap_metric(None), n_boot=1000)
+    rows.append(f"| **final (aggregator)** | {pro_str} | {anti_str} | "
+                f"{fmt_ci(p, lo, hi)} | {fmt_pct(row['null_rate'])}{flag} |")
 
     lines.append("\n".join(rows))
+
+    # Paired delta: same items pass through every layer, so the resample
+    # must be paired — unpaired CIs would badly overstate uncertainty.
+    first_layer = layer_names[0]
+    d, dlo, dhi = paired_bootstrap_delta(
+        qs, make_wb_gap_metric(None), make_wb_gap_metric(first_layer))
+    lines.append(f"\n**Aggregator − {first_layer} (paired):** {fmt_ci(d, dlo, dhi)}\n")
+    nlo, nhi, na = wb_noise_floor(qs)
+    lines.append(
+        f"\n> **Detectability baselines at n={len(qs)}:** a zero-sensitivity "
+        f"(random) model scores Gap in [{nlo:+.1%}, {nhi:+.1%}] (95% of seeds); "
+        f"a position-only ('always A') model scores {na:+.1%}. "
+        f"Interpret Gap against these, not against zero.\n")
     lines.append("\n".join(per_model_sections))
     return "\n".join(lines)
 

@@ -72,6 +72,17 @@ def main(path):
         f"with pro/anti, so Gap is contaminated by answer position. "
         f"Apply fix C3 (randomize A/B assignment) before collecting new data."
     )
+        # Noise floor: distribution of Gap for a zero-sensitivity model.
+    gaps = []
+    for s in range(200):
+        g, *_ = compute_diff(score_responses(fake_responses(qs, "random", s), qs)[0])
+        if g is not None:
+            gaps.append(g)
+    gaps.sort()
+    lo, hi = gaps[5], gaps[-6]   # central 95%
+    print(f"\nrandom-model Gap noise floor (200 seeds): "
+          f"[{lo:+.1%}, {hi:+.1%}]  median={gaps[len(gaps)//2]:+.1%}")
+    assert abs(gaps[len(gaps)//2]) < 0.05, "random model should center on 0"
     print("\nAll synthetic assertions passed.")
 
 
