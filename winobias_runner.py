@@ -147,8 +147,13 @@ def extract_two_entities(tokens, correct_start, correct_end, pronoun_idx):
 
     return correct_span, distractor_span
 
+def _item_rng(example_id):
+    """Deterministic per-item RNG so option order is reproducible."""
+    h = hashlib.sha256(str(example_id).encode()).hexdigest()
+    return random.Random(int(h[:16], 16))
 
-def format_winobias_example(example):
+
+def format_winobias_example(example, example_id):
     """
     Builds the A/B prompt and determines ground truth.
     Returns a dict with: prompt, correct_letter, correct_text, distractor_text,
@@ -178,9 +183,11 @@ def format_winobias_example(example):
     distractor_text = span_text(distractor_span, lowercase_first=(distractor_span[0] != 0))
     sentence = " ".join(tokens)
 
-    # Preserve sentence order for answer positions (avoid always putting
-    # the correct answer first/last, which would introduce our own bias).
-    if correct_span[0] < distractor_span[0]:
+    # Randomize A/B independently of sentence order. Sentence order
+    # correlates with the pro/anti condition (pair construction swaps the
+    # referent), so ordering by it confounds Gap with answer position —
+    # measured at +6.7% in the always-A synthetic control.
+    if _item_rng(example_id).random() < 0.5:
         ans_a, ans_b, correct_letter = correct_text, distractor_text, "A"
     else:
         ans_a, ans_b, correct_letter = distractor_text, correct_text, "B"

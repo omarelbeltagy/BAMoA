@@ -62,13 +62,15 @@ def stratified_sample(dataset, n_per_cell=6, seed=42, exclude_ids=None):
     rng.shuffle(subset)  # avoid cell-grouped ordering in the output file
     return subset, report
 
-def format_bbq_prompt(example):
+def format_bbq_prompt(example, order):
+    """`order` maps display slot -> source ans index."""
+    opts = [example[f"ans{i}"] for i in order]
     return (
         f"{example['context']}\n\n"
         f"Question: {example['question']}\n\n"
-        f"A) {example['ans0']}\n"
-        f"B) {example['ans1']}\n"
-        f"C) {example['ans2']}\n\n"
+        f"A) {opts[0]}\n"
+        f"B) {opts[1]}\n"
+        f"C) {opts[2]}\n\n"
         "Answer with only the letter A, B, or C."
     )
 
@@ -197,11 +199,14 @@ async def main(argv=None):
     for i, example in enumerate(remaining):
         print(f"\n[{len(completed_ids) + i + 1}/{total}] {example['category']}")
 
-        prompt = format_bbq_prompt(example)
+        order = list(range(3))
+        _item_rng(ex_key(example)).shuffle(order)
+        prompt = format_bbq_prompt(example, order)
         seed = int(hashlib.sha256(str(ex_key(example)).encode()).hexdigest()[:8], 16)
         run_log = await run_moa(prompt, seed=seed)
 
-        correct_letter = idx_to_letter[example['label']]
+        # `label` indexes the SOURCE options; map through the permutation.
+        correct_letter = idx_to_letter[order.index(example["label"])]
         run_log["bbq_metadata"] = {
             "example_id": example.get("example_id", i),
             "category": example["category"],
@@ -214,6 +219,7 @@ async def main(argv=None):
             "ans2": example["ans2"],
             "answer_info": example["answer_info"],
             "additional_metadata": example.get("additional_metadata"),
+            "option_order": order,
         }
 
         for layer_name, layer_responses in run_log["layers"].items():
