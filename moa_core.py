@@ -32,11 +32,16 @@ AGGREGATOR_MAX_TOKENS = 1024
 TEMPERATURE = 0.0
 
 
-def get_system_prompt_with_references(prev_responses):
+def get_system_prompt_with_references(prev_responses, order=None):
+    """Failed responses are dropped, not stringified. Passing None through
+    str() injected the literal text "None" as a peer response."""
+    usable = [r for r in prev_responses if r]
+    if order is not None:
+        usable = [usable[i] for i in order if i < len(usable)]
     return (
         AGGREGATOR_SYSTEM_PROMPT
         + "\n"
-        + "\n".join([f"{i+1}. {str(r)}" for i, r in enumerate(prev_responses)])
+        + "\n".join([f"{i+1}. {r}" for i, r in enumerate(usable)])
     )
 
 def classify_null(response, content):
@@ -122,17 +127,31 @@ async def run_moa(user_prompt):
         for m, r in zip(REFERENCE_MODELS, results)
     }
     texts = [r["content"] for r in results]
+    # D3: peers that failed and will be absent from the next layer's prompt.
+    # Nonzero means downstream models saw a degraded peer set.
+    run_log.setdefault("dropped_peers", {})["layer_1"] = \
+        sum(1 for t in texts if not t)
 
     for layer_idx in range(1, LAYERS - 1):
+        layer_name = f"layer_{layer_idx + 1}"
         results = await asyncio.gather(
-            *[run_llm(model, user_prompt, prev_response=results) for model in REFERENCE_MODELS]
+            *[run_llm(model, user_prompt, prev_response=texts)
+              for model in REFERENCE_MODELS]
         )
-        run_log["layers"][f"layer_{layer_idx + 1}"] = dict(zip(REFERENCE_MODELS, results))
+        run_log["layers"][layer_name] = {
+            m: r["content"] for m, r in zip(REFERENCE_MODELS, results)
+        }
+        run_log["layer_meta"][layer_name] = {
+            m: {k: v for k, v in r.items() if k != "content"}
+            for m, r in zip(REFERENCE_MODELS, results)
+        }
+        texts = [r["content"] for r in results]
+        run_log["dropped_peers"][layer_name] = sum(1 for t in texts if not t)
 
     # Aggregator now uses the same retried, logged path as proposers.
     # Streaming removed: it blocked the event loop and discarded
     # finish_reason, hiding the cause of elevated aggregator null rates.
-    final = await run_llm(AGGREGATOR_MODEL, user_prompt, prev_response=results,
+    final = await run_llm(AGGREGATOR_MODEL, user_prompt, prev_response=texts,
                           max_tokens=AGGREGATOR_MAX_TOKENS)
     run_log["final_response"] = final["content"]
     run_log["final_meta"] = {k: v for k, v in final.items() if k != "content"}
