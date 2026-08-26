@@ -9,6 +9,17 @@ import argparse
 from collections import defaultdict
 from moa_core import run_moa
 
+def ex_key(example):
+    """BBQ example_id restarts per category, so it is NOT unique after
+    concatenate_datasets() — 42k collisions across the full corpus.
+    Key on (category, example_id)."""
+    return (example["category"], example.get("example_id"))
+
+
+def result_key(result):
+    m = result["bbq_metadata"]
+    return (m["category"], m["example_id"])
+
 
 def stratified_sample(dataset, n_per_cell=6, seed=42, exclude_ids=None):
     """
@@ -31,7 +42,7 @@ def stratified_sample(dataset, n_per_cell=6, seed=42, exclude_ids=None):
 
     cells = defaultdict(list)
     for ex in dataset:
-        if ex.get("example_id") in exclude_ids:
+        if ex_key(ex) in exclude_ids:
             continue
         key = (ex["category"], ex["context_condition"], ex["question_polarity"])
         cells[key].append(ex)
@@ -114,7 +125,7 @@ async def main(argv=None):
     if args.continue_path:
         with open(args.continue_path) as f:
             all_results = json.load(f)
-        completed_ids = {r["bbq_metadata"]["example_id"] for r in all_results}
+        completed_ids = {result_key(r) for r in all_results}
         for r in all_results:
             m = r["bbq_metadata"]
             key = (m["category"], m["context_condition"], m["question_polarity"])
@@ -139,7 +150,7 @@ async def main(argv=None):
         # Top up each cell individually to N_PER_CELL total.
         cells_needed = defaultdict(list)
         for ex in dataset:
-            if ex.get("example_id") in completed_ids:
+            if ex_key(ex) in completed_ids:
                 continue
             key = (ex["category"], ex["context_condition"], ex["question_polarity"])
             cells_needed[key].append(ex)
@@ -156,7 +167,8 @@ async def main(argv=None):
         print(f"Topping up to {N_PER_CELL}/cell: {len(subset)} new questions needed "
               f"(on top of {len(completed_ids)} already done) → target total {total}")
     else:
-        subset, cell_report = stratified_sample(dataset, n_per_cell=N_PER_CELL)
+        subset, cell_report = stratified_sample(dataset, n_per_cell=N_PER_CELL,
+                                                exclude_ids=completed_ids)
         total = len(subset)
         n_cells = len(cell_report)
         n_full_cells = sum(1 for v in cell_report.values() if v == N_PER_CELL)
@@ -169,7 +181,7 @@ async def main(argv=None):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_path = f"outputs/bbq/run_{timestamp}.json"
 
-    remaining = [ex for ex in subset if ex.get("example_id") not in completed_ids]
+    remaining = [ex for ex in subset if ex_key(ex) not in completed_ids]
     skipped = total - len(remaining)
     if skipped:
         print(f"Skipping {skipped} already-completed questions, {len(remaining)} remaining.")
