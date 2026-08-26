@@ -103,7 +103,8 @@ def score_responses_ambig(response_pairs, questions, polarity):
         m = q["bbq_metadata"]
         sg = (m.get("additional_metadata") or {}).get("stereotyped_groups")
         targets = resolve_item_targets(m["answer_info"], sg,
-                                       m.get("option_order"))
+                                       m.get("option_order"),
+                                       category=m["category"])
         category = q["bbq_metadata"]["category"]
         for model, text in responses.items():
             letter = parse_answer(text)

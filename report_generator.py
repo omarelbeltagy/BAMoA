@@ -68,7 +68,7 @@ def bbq_layer_row(name, overall, is_ambig):
     n_valid = n_s + n_a + n_u
     n_attempted = n_valid + n_null
     null_rate = n_null / n_attempted if n_attempted else None
-    insufficient = n_valid < BBQ_MIN_VALID_N
+    insufficient = (n_s + n_a) < BBQ_MIN_VALID_N  # s_DIS is over committed answers
 
     if is_ambig:
         accuracy = n_u / n_valid if n_valid else None
