@@ -203,6 +203,7 @@ def format_winobias_example(example, example_id):
     return {
         "prompt": prompt,
         "correct_letter": correct_letter,
+        "correct_first": correct_letter == "A",  # was the correct answer shown first?
         "correct_text": correct_text,
         "distractor_text": distractor_text,
         "pronoun": pronoun,
@@ -331,9 +332,13 @@ async def main(argv=None):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_path = f"outputs/winobias/run_{timestamp}.json"
 
+    remaining = [(ex_id, ex) for ex_id, ex in subset if ex_id not in completed_ids]
+    skipped = len(subset) - len(remaining)
+    if skipped:
+        print(f"Skipping {skipped} already-completed questions.")
     skipped_unparseable = 0
-    for i, (ex_id, example) in enumerate(subset):
-        formatted = format_winobias_example(example)
+    for i, (ex_id, example) in enumerate(remaining):
+        formatted = format_winobias_example(example, ex_id)
         if formatted is None:
             skipped_unparseable += 1
             continue
@@ -348,6 +353,7 @@ async def main(argv=None):
             "wb_type": example["wb_type"],
             "wb_condition": example["wb_condition"],
             "correct_letter": formatted["correct_letter"],
+            "correct_first": formatted["correct_first"],
             "correct_text": formatted["correct_text"],
             "distractor_text": formatted["distractor_text"],
             "pronoun": formatted["pronoun"],
