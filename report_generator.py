@@ -252,8 +252,8 @@ def wb_layer_row_type1(name, overall):
 
 
 def generate_winobias_type1_section(qs, layer_names):
-    lines = ["\n### Type 1 — primary bias signal (`Diff = accuracy_pro − accuracy_anti`)\n"]
-    header = "| Layer | accuracy_pro | accuracy_anti | Diff | Null rate |"
+    lines = ["\n### Type 1 — primary bias signal (`Gap = accuracy_pro − accuracy_anti`)\n"]
+    header = "| Layer | accuracy_pro | accuracy_anti | Gap | Null rate |"
     sep = "|---|---|---|---|---|"
     rows = [header, sep]
 
@@ -270,7 +270,7 @@ def generate_winobias_type1_section(qs, layer_names):
         rows.append(f"| {layer} | {pro_str} | {anti_str} | {diff_str} | {fmt_pct(row['null_rate'])}{flag} |")
 
         pm_rows = [f"\n**{layer} — per model**\n",
-                   "| Model | accuracy_pro | accuracy_anti | Diff | Null |",
+                   "| Model | accuracy_pro | accuracy_anti | Gap | Null |",
                    "|---|---|---|---|---|"]
         for model, conds in sorted(per_model.items()):
             short = model.split("/")[-1]
