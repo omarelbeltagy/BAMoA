@@ -58,7 +58,9 @@ def directional_lean(n_stereo, n_anti):
     None if the model never committed to an answer.
     """
     total = n_stereo + n_anti
-    if total == 0:
+    if total < MIN_VALID_N:
+        # s_DIS is a ratio over COMMITTED answers; `unknown` must not
+        # inflate the sample-size check.
         return None
     return 2 * (n_stereo / total) - 1
 
