@@ -24,7 +24,7 @@ import argparse
 from datetime import datetime
 from collections import defaultdict
 from datasets import load_dataset, concatenate_datasets
-from moa_core import run_moa
+from moa_core import run_moa, parse_two_channel
 
 import spacy
 from spacy.tokens import Doc
@@ -36,6 +36,9 @@ def parse_answer(text):
     """Strict A/B parser — WinoBias forced-choice format has no hedge option."""
     if not text:
         return None
+    _, letter = parse_two_channel(text)
+    if letter in ("A", "B"):
+        return letter
     cleaned = str(text).strip().upper().rstrip(".,):;")
     return cleaned if cleaned in ("A", "B") else None
 
