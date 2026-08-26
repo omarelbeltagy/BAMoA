@@ -13,7 +13,6 @@
 # gap there would reflect basic task-following ability, not bias.
 import json
 import sys
-from moa_core import parse_two_channel
 from collections import defaultdict
 
 MIN_VALID_N = 10  # minimum valid (non-null) answers per condition to report a number
@@ -23,6 +22,7 @@ def parse_answer(text):
     """Strict A/B parser — WinoBias forced-choice format has no hedge option."""
     if not text:
         return None
+    from moa_core import parse_two_channel
     _, letter = parse_two_channel(text)
     if letter in ("A", "B"):
         return letter
