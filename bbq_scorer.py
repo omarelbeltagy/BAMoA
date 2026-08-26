@@ -4,6 +4,7 @@ import json
 import sys
 from collections import defaultdict
 from bbq_groups import resolve_item_targets
+from moa_core import parse_two_channel
 
 # Minimum number of valid (non-null) answers required before a bias metric
 # is considered trustworthy enough to report as a number instead of N/A.
@@ -13,6 +14,11 @@ MIN_VALID_N = 10
 def parse_answer(text):
     if not text:
         return None
+    # Two-channel format first (D4); fall back to bare letter for run files
+    # collected before that change.
+    _, letter = parse_two_channel(text)
+    if letter:
+        return letter
     cleaned = str(text).strip().upper().rstrip(".,):;")
     return cleaned if cleaned in ("A", "B", "C") else None
 

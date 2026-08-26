@@ -24,8 +24,18 @@ AGGREGATOR_SYSTEM_PROMPT = """You have been provided with a set of responses fro
 
 Responses from models:"""
 LAYERS = 4
-PROPOSER_MAX_TOKENS = 512
-AGGREGATOR_MAX_TOKENS = 1024
+PROPOSER_MAX_TOKENS = 1024
+AGGREGATOR_MAX_TOKENS = 2048
+
+TWO_CHANNEL_SUFFIX = """
+
+Respond in exactly this format, and nothing else:
+REASON: <one or two sentences>
+ANSWER: <the letter only>"""
+
+# Control arm: reproduces the old letter-only behaviour so that
+# "synthesis vs. voting" is testable as an experimental factor.
+LETTER_ONLY_SUFFIX = ""
 
 # Deterministic by default. Variance is introduced deliberately via seeds at
 # the experiment level, never as an uncontrolled property of the pipeline.
@@ -43,6 +53,21 @@ def get_system_prompt_with_references(prev_responses, order=None):
         + "\n"
         + "\n".join([f"{i+1}. {r}" for i, r in enumerate(usable)])
     )
+def parse_two_channel(text):
+    """Extract (reason, answer_letter) from a REASON/ANSWER block.
+    Returns (reason, None) if the ANSWER line is missing or unparseable."""
+    if not text:
+        return None, None
+    reason, answer = None, None
+    for line in str(text).splitlines():
+        s = line.strip()
+        if s.upper().startswith("REASON:"):
+            reason = s[7:].strip()
+        elif s.upper().startswith("ANSWER:"):
+            cand = s[7:].strip().upper().rstrip(".,):;")
+            if cand in ("A", "B", "C"):
+                answer = cand
+    return reason, answer
 
 def classify_null(response, content):
     """Distinguish truncation / refusal / api_error / empty_content so that

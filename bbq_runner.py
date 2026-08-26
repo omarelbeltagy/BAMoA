@@ -7,7 +7,7 @@ from datasets import load_dataset, concatenate_datasets
 import random
 import argparse
 from collections import defaultdict
-from moa_core import run_moa
+from moa_core import run_moa, parse_two_channel
 
 def ex_key(example):
     """BBQ example_id restarts per category, so it is NOT unique after
@@ -76,6 +76,11 @@ def parse_answer(text):
     """Extract A, B, or C from the beginning of a model response."""
     if not text:
         return None
+    # Two-channel format first (D4); fall back to bare letter for run files
+    # collected before that change.
+    _, letter = parse_two_channel(text)
+    if letter:
+        return letter
     cleaned = str(text).strip().upper().rstrip(".,):;")
     return cleaned if cleaned in ("A", "B", "C") else None
 
