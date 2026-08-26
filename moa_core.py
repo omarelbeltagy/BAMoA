@@ -5,6 +5,7 @@
 # is held fixed while only the benchmark/prompt changes.
 import asyncio
 import os
+import time
 from together import AsyncTogether, Together
 
 client = Together(api_key=os.environ.get("TOGETHER_API_KEY"))
@@ -38,33 +39,72 @@ def get_system_prompt_with_references(prev_responses):
         + "\n".join([f"{i+1}. {str(r)}" for i, r in enumerate(prev_responses)])
     )
 
+def classify_null(response, content):
+    """Distinguish truncation / refusal / api_error / empty_content so that
+    a high null rate is diagnosable rather than just visible."""
+    if response is None:
+        return "api_error"
+    reason = getattr(response.choices[0], "finish_reason", None)
+    if reason == "length":
+        return "truncated"
+    if content and content.strip():
+        return "format_violation"   # produced text, no parseable answer
+    return "empty_content"
 
-async def run_llm(model, user_prompt, prev_response=None):
+async def run_llm(model, user_prompt, prev_response=None, temperature=None,
+                  max_tokens=None, system_prompt=None, order=None):
+    """
+    Returns a dict: content, finish_reason, reasoning, null_reason, attempts,
+    latency_s. Never a bare string — callers need the metadata to diagnose
+    nulls and to audit which model said what.
+    """
+    attempts = 0
+    t0 = time.time()
+    last = "api_error"
     for sleep_time in [1, 2, 4]:
+        attempts += 1
         try:
             messages = (
                 [
-                    {"role": "system", "content": get_system_prompt_with_references(prev_response)},
+                    {"role": "system",
+                     "content": get_system_prompt_with_references(prev_response, order)},
                     {"role": "user", "content": user_prompt},
                 ]
                 if prev_response
-                else [{"role": "user", "content": user_prompt}]
+                else ([{"role": "system", "content": system_prompt},
+                       {"role": "user", "content": user_prompt}]
+                      if system_prompt else
+                      [{"role": "user", "content": user_prompt}])
             )
             response = await async_client.chat.completions.create(
                 model=model,
                 messages=messages,
-                temperature=TEMPERATURE,
-                max_tokens=PROPOSER_MAX_TOKENS,
+                temperature=TEMPERATURE if temperature is None else temperature,
+                max_tokens=PROPOSER_MAX_TOKENS if max_tokens is None else max_tokens,
             )
+            msg = response.choices[0].message
             content = response.choices[0].message.content
+            reasoning = (getattr(msg, "reasoning", None)
+                         or getattr(msg, "reasoning_content", None))
             if not content:
+                last = classify_null(response, content)
                 await asyncio.sleep(sleep_time)
                 continue
-            return content
+            return {
+                "content": content,
+                "finish_reason": getattr(response.choices[0], "finish_reason", None),
+                "reasoning": reasoning,
+                "null_reason": None,
+                "attempts": attempts,
+                "latency_s": round(time.time() - t0, 2),
+            }
         except Exception as e:
             print(f"  Error [{model.split('/')[-1]}]: {e}")
+            last = "api_error"
             await asyncio.sleep(sleep_time)
-    return None
+    return {"content": None, "finish_reason": None, "reasoning": None,
+            "null_reason": last, "attempts": attempts,
+            "latency_s": round(time.time() - t0, 2)}
 
 
 async def run_moa(user_prompt):
@@ -76,7 +116,12 @@ async def run_moa(user_prompt):
     run_log = {"question": user_prompt, "layers": {}}
 
     results = await asyncio.gather(*[run_llm(model, user_prompt) for model in REFERENCE_MODELS])
-    run_log["layers"]["layer_1"] = dict(zip(REFERENCE_MODELS, results))
+    run_log["layers"]["layer_1"] = {m: r["content"] for m, r in zip(REFERENCE_MODELS, results)}
+    run_log.setdefault("layer_meta", {})["layer_1"] = {
+        m: {k: v for k, v in r.items() if k != "content"}
+        for m, r in zip(REFERENCE_MODELS, results)
+    }
+    texts = [r["content"] for r in results]
 
     for layer_idx in range(1, LAYERS - 1):
         results = await asyncio.gather(
@@ -84,19 +129,11 @@ async def run_moa(user_prompt):
         )
         run_log["layers"][f"layer_{layer_idx + 1}"] = dict(zip(REFERENCE_MODELS, results))
 
-    final_response = ""
-    final_stream = client.chat.completions.create(
-        model=AGGREGATOR_MODEL,
-        messages=[
-            {"role": "system", "content": get_system_prompt_with_references(results)},
-            {"role": "user", "content": user_prompt},
-        ],
-        stream=True,
-        max_tokens=AGGREGATOR_MAX_TOKENS,
-    )
-    for chunk in final_stream:
-        if chunk.choices:
-            final_response += chunk.choices[0].delta.content or ""
-
-    run_log["final_response"] = final_response
+    # Aggregator now uses the same retried, logged path as proposers.
+    # Streaming removed: it blocked the event loop and discarded
+    # finish_reason, hiding the cause of elevated aggregator null rates.
+    final = await run_llm(AGGREGATOR_MODEL, user_prompt, prev_response=results,
+                          max_tokens=AGGREGATOR_MAX_TOKENS)
+    run_log["final_response"] = final["content"]
+    run_log["final_meta"] = {k: v for k, v in final.items() if k != "content"}
     return run_log
