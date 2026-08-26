@@ -8,7 +8,7 @@ def main(path):
     with open(path) as f:
         questions = json.load(f)
 
-    stats = defaultdict(lambda: {"ok": 0, "fail": 0})
+    stats = defaultdict(lambda: defaultdict(int))
     examples = defaultdict(list)
 
     for q in questions:
@@ -16,6 +16,7 @@ def main(path):
         sg = (m.get("additional_metadata") or {}).get("stereotyped_groups")
         res, tier = resolve_item_targets(m["answer_info"], sg,
                                          m.get("option_order"),
+                                         category=m["category"],
                                          return_tier=True)
         cat = m["category"]
         if res is None:
@@ -25,17 +26,22 @@ def main(path):
                           for i in range(3)]
                 examples[cat].append({"sg": sg, "labels": labels})
         else:
+            stats[cat]["ok"] += 1
             stats[cat][f"tier{tier}"] += 1
 
     print(f"{'category':<25} {'t1':>6} {'t2':>6} {'t3':>6} "
           f"{'unres':>7} {'rate':>8}")
     tot_ok = tot_fail = 0
+    tot = defaultdict(int)
     for cat in sorted(stats):
         ok, fail = stats[cat]["ok"], stats[cat]["fail"]
         tot_ok += ok; tot_fail += fail
+        for t in ("tier1", "tier2", "tier3"):
+            tot[t] += stats[cat][t]
         print(f"{cat:<25} {stats[cat]['tier1']:>6} {stats[cat]['tier2']:>6} "
               f"{stats[cat]['tier3']:>6} {fail:>7} {ok/(ok+fail):>7.1%}")
-    print(f"{'TOTAL':<25} {tot_ok:>10} {tot_fail:>12} "
+    print(f"{'TOTAL':<25} {tot['tier1']:>6} {tot['tier2']:>6} "
+          f"{tot['tier3']:>6} {tot_fail:>7} "
           f"{tot_ok/(tot_ok+tot_fail):>7.1%}")
 
     if any(examples.values()):
