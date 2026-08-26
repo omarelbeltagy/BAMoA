@@ -10,6 +10,7 @@
 # `unknown`. `additional_metadata.stereotyped_groups` names the disadvantaged
 # group. If exactly one named option matches it, the other is the non-target
 # by elimination. Anything else is unresolved and MUST be skipped.
+
 import re
 
 # Surface variants that appear in answer labels but not in
@@ -21,6 +22,65 @@ ALIASES = {
     "lowses": "lowses", "highses": "highses",   # 'low SES' normalizes to 'lowses'
 }
 
+# Categories where option labels are compound (axis1-axis2-axis3) and a
+# tier-1 match on one axis can be misleading when other axes also vary.
+INTERSECTIONAL = {"Race_x_SES", "Race_x_gender"}
+
+# Known axis vocabularies, in (target, non_target) order. The target is the
+# disadvantaged side. EDITORIAL: BBQ's stereotyped_groups does not specify
+# which option a stereotype favours when both share the named group, so we
+# take the disadvantaged side of the varying axis. Flagged as tier 3 so
+# results can be reported with and without these items.
+AXES = {
+    "ses":    ("lowses", "highses"),
+    "gender": ("f", "m"),
+}
+
+
+def _axis_values(label):
+    """Map a compound label to {axis: token} for the axes we know about."""
+    parts = set(_components(label))
+    found = {}
+    for axis, (t, n) in AXES.items():
+        if t in parts:
+            found[axis] = t
+        elif n in parts:
+            found[axis] = n
+    return found, parts
+
+
+def _residual(parts):
+    """Tokens not belonging to any known axis — i.e. the race component."""
+    known = {v for pair in AXES.values() for v in pair}
+    return parts - known
+
+
+def resolve_intersectional(named):
+    """
+    named: [(letter, label, text), ...] with exactly 2 entries.
+    Returns (target_letter, tier) or (None, None).
+
+    Resolves ONLY when exactly one axis differs between the two options.
+    When the residual (race) component also differs, two axes vary at once
+    and stereotyped_groups cannot say which the item probes — we refuse
+    rather than guess.
+    """
+    (l1, lab1, _), (l2, lab2, _) = named
+    ax1, parts1 = _axis_values(lab1)
+    ax2, parts2 = _axis_values(lab2)
+
+    # Race (or other residual) must be held constant.
+    if _residual(parts1) != _residual(parts2):
+        return None, None
+
+    differing = [a for a in AXES if ax1.get(a) != ax2.get(a)
+                 and a in ax1 and a in ax2]
+    if len(differing) != 1:
+        return None, None
+
+    axis = differing[0]
+    target_tok = AXES[axis][0]
+    return (l1 if ax1[axis] == target_tok else l2), 3
 
 def _norm(s):
     """Lowercase, keep alphanumerics only — tolerant surface matching."""
@@ -103,6 +163,18 @@ def resolve_item_targets(answer_info, stereotyped_groups, option_order=None,
 
     if len(named) != 2:
         return (None, None) if return_tier else None
+
+    # Intersectional categories are resolved by axis structure, not by
+    # tier-1 group matching: a tier-1 hit can be actively wrong when more
+    # than one axis varies (e.g. lowSES-F-Asian vs highSES-F-White with
+    # stereotyped_groups=['White']).
+    if category in INTERSECTIONAL:
+        tb, tier = resolve_intersectional(named)
+        if tb is None:
+            return (None, None) if return_tier else None
+        for letter, _, _ in named:
+            result[letter] = "target" if letter == tb else "nontarget"
+        return (result, tier) if return_tier else result
 
     tier = 1
     matched = [l for l, lab, _ in named if _matches(lab, stereotyped_groups)]
