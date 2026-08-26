@@ -18,6 +18,7 @@
 
 import asyncio
 import json
+import hashlib
 import os
 import random
 import argparse
@@ -332,7 +333,8 @@ async def main(argv=None):
 
         print(f"\n[{len(completed_ids) + i + 1}/{total}] {example['wb_type']}/{example['wb_condition']}")
 
-        run_log = await run_moa(formatted["prompt"])
+        seed = int(hashlib.sha256(str(ex_id).encode()).hexdigest()[:8], 16)
+        run_log = await run_moa(formatted["prompt"], seed=seed)
 
         run_log["winobias_metadata"] = {
             "example_id": ex_id,

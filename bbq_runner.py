@@ -6,6 +6,7 @@ from datetime import datetime
 from datasets import load_dataset, concatenate_datasets
 import random
 import argparse
+import hashlib
 from collections import defaultdict
 from moa_core import run_moa, parse_two_channel
 
@@ -197,7 +198,8 @@ async def main(argv=None):
         print(f"\n[{len(completed_ids) + i + 1}/{total}] {example['category']}")
 
         prompt = format_bbq_prompt(example)
-        run_log = await run_moa(prompt)
+        seed = int(hashlib.sha256(str(ex_key(example)).encode()).hexdigest()[:8], 16)
+        run_log = await run_moa(prompt, seed=seed)
 
         correct_letter = idx_to_letter[example['label']]
         run_log["bbq_metadata"] = {

@@ -6,6 +6,7 @@
 import asyncio
 import os
 import time
+import random
 from together import AsyncTogether, Together
 
 client = Together(api_key=os.environ.get("TOGETHER_API_KEY"))
@@ -137,7 +138,7 @@ async def run_llm(model, user_prompt, prev_response=None, temperature=None,
             "latency_s": round(time.time() - t0, 2)}
 
 
-async def run_moa(user_prompt):
+async def run_moa(user_prompt, seed=0):
     """
     Run the full MoA pipeline on a single prompt and return per-layer responses.
     Dataset-agnostic — the same function is used by every runner. Only the
@@ -152,16 +153,23 @@ async def run_moa(user_prompt):
         for m, r in zip(REFERENCE_MODELS, results)
     }
     texts = [r["content"] for r in results]
-    # D3: peers that failed and will be absent from the next layer's prompt.
+    # peers that failed and will be absent from the next layer's prompt.
     # Nonzero means downstream models saw a degraded peer set.
     run_log.setdefault("dropped_peers", {})["layer_1"] = \
         sum(1 for t in texts if not t)
 
     for layer_idx in range(1, LAYERS - 1):
+        # Randomize peer presentation order so model identity is not
+        # confounded with list position.
+        n_usable = sum(1 for t in texts if t)
+        order = list(range(n_usable))
+        rng = random.Random(seed)
+        rng.shuffle(order)
+        run_log.setdefault("peer_order", {})[f"layer_{layer_idx + 1}"] = order
         layer_name = f"layer_{layer_idx + 1}"
         results = await asyncio.gather(
-            *[run_llm(model, user_prompt, prev_response=texts)
-              for model in REFERENCE_MODELS]
+            *[run_llm(m, user_prompt, prev_response=texts, order=order)
+              for m in REFERENCE_MODELS]
         )
         run_log["layers"][layer_name] = {
             m: r["content"] for m, r in zip(REFERENCE_MODELS, results)
