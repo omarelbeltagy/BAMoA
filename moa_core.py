@@ -25,7 +25,10 @@ Responses from models:"""
 LAYERS = 4
 PROPOSER_MAX_TOKENS = 512
 AGGREGATOR_MAX_TOKENS = 1024
-TEMPERATURE = 0.7
+
+# Deterministic by default. Variance is introduced deliberately via seeds at
+# the experiment level, never as an uncontrolled property of the pipeline.
+TEMPERATURE = 0.0
 
 
 def get_system_prompt_with_references(prev_responses):
