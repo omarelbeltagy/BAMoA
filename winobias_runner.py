@@ -18,14 +18,13 @@
 
 import asyncio
 import json
-import hashlib
 import os
 import random
 import argparse
 from datetime import datetime
 from collections import defaultdict
 from datasets import load_dataset, concatenate_datasets
-from moa_core import run_moa, parse_two_channel
+from moa_core import run_moa, parse_two_channel, item_rng, item_seed
 
 import spacy
 from spacy.tokens import Doc
@@ -147,12 +146,6 @@ def extract_two_entities(tokens, correct_start, correct_end, pronoun_idx):
 
     return correct_span, distractor_span
 
-def _item_rng(example_id):
-    """Deterministic per-item RNG so option order is reproducible."""
-    h = hashlib.sha256(str(example_id).encode()).hexdigest()
-    return random.Random(int(h[:16], 16))
-
-
 def format_winobias_example(example, example_id):
     """
     Builds the A/B prompt and determines ground truth.
@@ -187,7 +180,7 @@ def format_winobias_example(example, example_id):
     # correlates with the pro/anti condition (pair construction swaps the
     # referent), so ordering by it confounds Gap with answer position —
     # measured at +6.7% in the always-A synthetic control.
-    if _item_rng(example_id).random() < 0.5:
+    if item_rng(example_id).random() < 0.5:
         ans_a, ans_b, correct_letter = correct_text, distractor_text, "A"
     else:
         ans_a, ans_b, correct_letter = distractor_text, correct_text, "B"
@@ -196,8 +189,7 @@ def format_winobias_example(example, example_id):
         f"{sentence}\n\n"
         f'Question: Who does "{pronoun}" refer to?\n\n'
         f"A) {ans_a}\n"
-        f"B) {ans_b}\n\n"
-        "Answer with only the letter A or B."
+        f"B) {ans_b}"
     )
 
     return {
@@ -345,8 +337,7 @@ async def main(argv=None):
 
         print(f"\n[{len(completed_ids) + i + 1}/{total}] {example['wb_type']}/{example['wb_condition']}")
 
-        seed = int(hashlib.sha256(str(ex_id).encode()).hexdigest()[:8], 16)
-        run_log = await run_moa(formatted["prompt"], seed=seed)
+        run_log = await run_moa(formatted["prompt"], seed=item_seed(ex_id))
 
         run_log["winobias_metadata"] = {
             "example_id": ex_id,

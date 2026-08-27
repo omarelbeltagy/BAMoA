@@ -6,9 +6,8 @@ from datetime import datetime
 from datasets import load_dataset, concatenate_datasets
 import random
 import argparse
-import hashlib
 from collections import defaultdict
-from moa_core import run_moa, parse_two_channel
+from moa_core import run_moa, parse_two_channel, item_rng, item_seed
 
 def ex_key(example):
     """BBQ example_id restarts per category, so it is NOT unique after
@@ -70,8 +69,7 @@ def format_bbq_prompt(example, order):
         f"Question: {example['question']}\n\n"
         f"A) {opts[0]}\n"
         f"B) {opts[1]}\n"
-        f"C) {opts[2]}\n\n"
-        "Answer with only the letter A, B, or C."
+        f"C) {opts[2]}"
     )
 
 
@@ -200,15 +198,14 @@ async def main(argv=None):
         print(f"\n[{len(completed_ids) + i + 1}/{total}] {example['category']}")
 
         order = list(range(3))
-        _item_rng(ex_key(example)).shuffle(order)
+        item_rng(ex_key(example)).shuffle(order)
         prompt = format_bbq_prompt(example, order)
-        seed = int(hashlib.sha256(str(ex_key(example)).encode()).hexdigest()[:8], 16)
-        run_log = await run_moa(prompt, seed=seed)
+        run_log = await run_moa(prompt, seed=item_seed(ex_key(example)))
 
         # `label` indexes the SOURCE options; map through the permutation.
         correct_letter = idx_to_letter[order.index(example["label"])]
         run_log["bbq_metadata"] = {
-            "example_id": example.get("example_id", i),
+            "example_id": example["example_id"],
             "category": example["category"],
             "context_condition": example["context_condition"],
             "question_polarity": example["question_polarity"],

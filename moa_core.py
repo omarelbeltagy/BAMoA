@@ -5,18 +5,19 @@
 # is held fixed while only the benchmark/prompt changes.
 import asyncio
 import os
+import hashlib
 import time
 import random
-from together import AsyncTogether, Together
+import re
+from together import AsyncTogether
 
-client = Together(api_key=os.environ.get("TOGETHER_API_KEY"))
 async_client = AsyncTogether(api_key=os.environ.get("TOGETHER_API_KEY"))
 
 # Fixed model pool for all experiments — verified serverless-accessible and
 # non-reasoning (see project docs for verification method/results).
 REFERENCE_MODELS = [
     "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-    "Qwen/Qwen2.5-7B-Instruct-Turbo",
+    "arize-ai/qwen-2-1.5b-instruct",
     "deepseek-ai/DeepSeek-V4-Flash-0731",
     "google/gemma-4-31B-it",
 ]
@@ -53,12 +54,27 @@ ANSWER: <the letter only>"""
 
 # Control arm: reproduces the old letter-only behaviour so that
 # "synthesis vs. voting" is testable as an experimental factor.
-LETTER_ONLY_SUFFIX = ""
+LETTER_ONLY_SUFFIX = "\n\nAnswer with only the letter."
 
 # Deterministic by default. Variance is introduced deliberately via seeds at
 # the experiment level, never as an uncontrolled property of the pipeline.
 TEMPERATURE = 0.0
 
+# moa_core.py
+def item_seed(key):
+    """Stable integer seed from an item key, for run_moa(seed=...)."""
+    return int(hashlib.sha256(str(key).encode()).hexdigest()[:8], 16)
+
+def item_rng(example_id):
+    """Deterministic per-item RNG so option order is reproducible."""
+    h = hashlib.sha256(str(example_id).encode()).hexdigest()
+    return random.Random(int(h[:16], 16))
+
+def apply_suffix(prompt, two_channel=True):
+    """Append the output-format instruction. Runners pass the bare
+    question; the mode is a pipeline-level experimental factor, so it is
+    applied here rather than in each runner."""
+    return prompt + (TWO_CHANNEL_SUFFIX if two_channel else LETTER_ONLY_SUFFIX)
 
 def get_system_prompt_with_references(prev_responses, order=None,
                                       variant="neutral"):
@@ -83,7 +99,11 @@ def parse_two_channel(text):
         if s.upper().startswith("REASON:"):
             reason = s[7:].strip()
         elif s.upper().startswith("ANSWER:"):
-            cand = s[7:].strip().upper().rstrip(".,):;")
+            cand = s[7:].strip().upper()
+            # Tolerate "B) The manager" — take the leading letter when
+            # followed by a delimiter. Bare "Sharon" still fails, correctly.
+            m = re.match(r"^([ABC])\b", cand)
+            cand = m.group(1) if m else cand.rstrip(".,):;")
             if cand in ("A", "B", "C"):
                 answer = cand
     return reason, answer
@@ -101,7 +121,8 @@ def classify_null(response, content):
     return "empty_content"
 
 async def run_llm(model, user_prompt, prev_response=None, temperature=None,
-                  max_tokens=None, system_prompt=None, order=None):
+                  max_tokens=None, system_prompt=None, order=None,
+                  variant="neutral"):
     """
     Returns a dict: content, finish_reason, reasoning, null_reason, attempts,
     latency_s. Never a bare string — callers need the metadata to diagnose
@@ -116,7 +137,9 @@ async def run_llm(model, user_prompt, prev_response=None, temperature=None,
             messages = (
                 [
                     {"role": "system",
-                     "content": get_system_prompt_with_references(prev_response, order)},
+                     "content": ((system_prompt + "\n\n") if system_prompt else "")
+                                + get_system_prompt_with_references(
+                                    prev_response, order, variant)},
                     {"role": "user", "content": user_prompt},
                 ]
                 if prev_response
@@ -132,7 +155,7 @@ async def run_llm(model, user_prompt, prev_response=None, temperature=None,
                 max_tokens=PROPOSER_MAX_TOKENS if max_tokens is None else max_tokens,
             )
             msg = response.choices[0].message
-            content = response.choices[0].message.content
+            content = msg.content
             reasoning = (getattr(msg, "reasoning", None)
                          or getattr(msg, "reasoning_content", None))
             if not content:
@@ -157,17 +180,22 @@ async def run_llm(model, user_prompt, prev_response=None, temperature=None,
 
 
 async def run_moa(user_prompt, pool=None, n_layers=None, aggregator=None,
-                  agg_prompt_variant="neutral", two_channel=True, seed=0):
+                    agg_prompt_variant="neutral", proposer_synth_variant="neutral",
+                    two_channel=True, seed=0):
     """
+    Run the full MoA pipeline on a single prompt and return per-layer responses.
+    Dataset-agnostic — only prompt formatting and scoring differ per dataset.
+
     pool: list of (model_name, proposer_prompt_variant) pairs. A subset
           enables the leave-one-out / coalition sweeps needed for RQ2.
     n_layers: total layers including aggregation.
     """
-    import random
-    rng = random.Random(seed)
+    rng = random.Random(seed)          # ONE generator for the whole run
     pool = pool or [(m, "neutral") for m in REFERENCE_MODELS]
     n_layers = n_layers or LAYERS
     aggregator = aggregator or AGGREGATOR_MODEL
+    models = [m for m, _ in pool]
+    user_prompt = apply_suffix(user_prompt, two_channel)
 
     run_log = {
         "question": user_prompt,
@@ -176,57 +204,61 @@ async def run_moa(user_prompt, pool=None, n_layers=None, aggregator=None,
         "config": {
             "pool": pool, "n_layers": n_layers, "aggregator": aggregator,
             "agg_prompt_variant": agg_prompt_variant,
+            "proposer_synth_variant": proposer_synth_variant,
             "two_channel": two_channel, "seed": seed,
             "temperature": TEMPERATURE,
         },
         "layers": {},
+        "layer_meta": {},
+        "dropped_peers": {},
+        "peer_order": {},
     }
-    """
-    Run the full MoA pipeline on a single prompt and return per-layer responses.
-    Dataset-agnostic — the same function is used by every runner. Only the
-    prompt formatting and scoring differ per dataset.
-    """
-    run_log = {"question": user_prompt, "layers": {}}
 
-    results = await asyncio.gather(*[run_llm(model, user_prompt) for model in REFERENCE_MODELS])
-    run_log["layers"]["layer_1"] = {m: r["content"] for m, r in zip(REFERENCE_MODELS, results)}
-    run_log.setdefault("layer_meta", {})["layer_1"] = {
-        m: {k: v for k, v in r.items() if k != "content"}
-        for m, r in zip(REFERENCE_MODELS, results)
-    }
-    texts = [r["content"] for r in results]
-    # peers that failed and will be absent from the next layer's prompt.
-    # Nonzero means downstream models saw a degraded peer set.
-    run_log.setdefault("dropped_peers", {})["layer_1"] = \
-        sum(1 for t in texts if not t)
-
-    for layer_idx in range(1, LAYERS - 1):
-        # Randomize peer presentation order so model identity is not
-        # confounded with list position.
-        n_usable = sum(1 for t in texts if t)
-        order = list(range(n_usable))
-        rng = random.Random(seed)
-        rng.shuffle(order)
-        run_log.setdefault("peer_order", {})[f"layer_{layer_idx + 1}"] = order
-        layer_name = f"layer_{layer_idx + 1}"
-        results = await asyncio.gather(
-            *[run_llm(m, user_prompt, prev_response=texts, order=order)
-              for m in REFERENCE_MODELS]
-        )
+    def record(layer_name, results):
         run_log["layers"][layer_name] = {
-            m: r["content"] for m, r in zip(REFERENCE_MODELS, results)
+            m: r["content"] for m, r in zip(models, results)
         }
         run_log["layer_meta"][layer_name] = {
             m: {k: v for k, v in r.items() if k != "content"}
-            for m, r in zip(REFERENCE_MODELS, results)
+            for m, r in zip(models, results)
         }
         texts = [r["content"] for r in results]
+        # Peers that failed and will be absent from the next layer's prompt.
+        # Nonzero means downstream models saw a degraded peer set.
         run_log["dropped_peers"][layer_name] = sum(1 for t in texts if not t)
+        return texts
 
-    # Aggregator now uses the same retried, logged path as proposers.
-    # Streaming removed: it blocked the event loop and discarded
-    # finish_reason, hiding the cause of elevated aggregator null rates.
-    final = await run_llm(AGGREGATOR_MODEL, user_prompt, prev_response=texts,
+    # --- Layer 1: no peer context ---
+    results = await asyncio.gather(*[
+        run_llm(m, user_prompt, system_prompt=PROPOSER_PROMPTS.get(v))
+        for m, v in pool
+    ])
+    texts = record("layer_1", results)
+
+    # --- Subsequent proposer layers ---
+    for layer_idx in range(1, n_layers - 1):
+        layer_name = f"layer_{layer_idx + 1}"
+        # Fresh permutation per layer, drawn from the run-level generator,
+        # so model identity is not confounded with list position.
+        order = list(range(sum(1 for t in texts if t)))
+        rng.shuffle(order)
+        run_log["peer_order"][layer_name] = order
+
+        results = await asyncio.gather(*[
+            run_llm(m, user_prompt, prev_response=texts, order=order,
+                    system_prompt=PROPOSER_PROMPTS.get(v),
+                    variant=proposer_synth_variant)
+            for m, v in pool
+        ])
+        texts = record(layer_name, results)
+
+    # --- Aggregator: same retried, logged path as proposers ---
+    order = list(range(sum(1 for t in texts if t)))
+    rng.shuffle(order)
+    run_log["peer_order"]["final"] = order
+
+    final = await run_llm(aggregator, user_prompt, prev_response=texts,
+                          order=order, variant=agg_prompt_variant,
                           max_tokens=AGGREGATOR_MAX_TOKENS)
     run_log["final_response"] = final["content"]
     run_log["final_meta"] = {k: v for k, v in final.items() if k != "content"}
