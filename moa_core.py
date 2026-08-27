@@ -17,11 +17,11 @@ async_client = AsyncTogether(api_key=os.environ.get("TOGETHER_API_KEY"))
 # non-reasoning (see project docs for verification method/results).
 REFERENCE_MODELS = [
     "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-    "arize-ai/qwen-2-1.5b-instruct",
-    "deepseek-ai/DeepSeek-V4-Flash-0731",
-    "google/gemma-4-31B-it",
+    "openai/gpt-oss-120b",
+    "MiniMaxAI/MiniMax-M3",
+    "thinkingmachines/Inkling-Small",   
 ]
-AGGREGATOR_MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
+AGGREGATOR_MODEL = "deepseek-ai/DeepSeek-V4-Pro"
 # NOTE: the original prompt warned that inputs "may be biased or incorrect",
 # priming the aggregator toward bias correction — a confound for any
 # measurement of whether aggregation suppresses bias. Both variants retained
