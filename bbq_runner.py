@@ -7,7 +7,7 @@ from datasets import load_dataset, concatenate_datasets
 import random
 import argparse
 from collections import defaultdict
-from moa_core import run_moa, parse_two_channel, item_rng, item_seed
+from moa_core import REFERENCE_MODELS, run_moa, parse_two_channel, item_rng, item_seed
 
 def ex_key(example):
     """BBQ example_id restarts per category, so it is NOT unique after
@@ -123,6 +123,9 @@ async def main(argv=None):
     )
     args = parser.parse_args(argv)
 
+    pool = [(m, args.pool_variant) for m in REFERENCE_MODELS]
+    print(f"Pool variant: {args.pool_variant}  ({len(pool)} proposers)")
+
     completed_ids = set()
     all_results = []
     out_path = None
@@ -200,7 +203,7 @@ async def main(argv=None):
         order = list(range(3))
         item_rng(ex_key(example)).shuffle(order)
         prompt = format_bbq_prompt(example, order)
-        run_log = await run_moa(prompt, seed=item_seed(ex_key(example)))
+        run_log = await run_moa(prompt, pool = pool, seed=item_seed(ex_key(example)))
 
         # `label` indexes the SOURCE options; map through the permutation.
         correct_letter = idx_to_letter[order.index(example["label"])]

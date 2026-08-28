@@ -24,7 +24,7 @@ import argparse
 from datetime import datetime
 from collections import defaultdict
 from datasets import load_dataset, concatenate_datasets
-from moa_core import run_moa, parse_two_channel, item_rng, item_seed
+from moa_core import REFERENCE_MODELS, run_moa, parse_two_channel, item_rng, item_seed
 
 import spacy
 from spacy.tokens import Doc
@@ -257,7 +257,15 @@ async def main(argv=None):
              "only as a baseline check that models can do the task at all "
              "— not a primary bias-signal condition, hence no scaling flag.",
     )
+    parser.add_argument(
+        "--pool-variant", default="neutral",
+        help="Proposer prompt variant applied to ALL proposers. "
+             "'neutral' is the k=0 baseline; 'strong' is k=4.",
+    )
     args = parser.parse_args(argv)
+
+    pool = [(m, args.pool_variant) for m in REFERENCE_MODELS]
+    print(f"Pool variant: {args.pool_variant}  ({len(pool)} proposers)")
 
     print("Loading WinoBias dataset...")
     dataset = load_winobias_raw()
@@ -337,7 +345,8 @@ async def main(argv=None):
 
         print(f"\n[{len(completed_ids) + i + 1}/{total}] {example['wb_type']}/{example['wb_condition']}")
 
-        run_log = await run_moa(formatted["prompt"], seed=item_seed(ex_id))
+        run_log = await run_moa(formatted["prompt"], pool=pool,
+                                seed=item_seed(ex_id))
 
         run_log["winobias_metadata"] = {
             "example_id": ex_id,
