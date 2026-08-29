@@ -22,7 +22,7 @@ REFERENCE_MODELS = [
     "MiniMaxAI/MiniMax-M3",
     "thinkingmachines/Inkling-Small",   
 ]
-AGGREGATOR_MODEL = "deepseek-ai/DeepSeek-V4-Pro"
+AGGREGATOR_MODEL = "deepseek-ai/DeepSeek-V4-Pro-0813"
 # NOTE: the original prompt warned that inputs "may be biased or incorrect",
 # priming the aggregator toward bias correction — a confound for any
 # measurement of whether aggregation suppresses bias. Both variants retained
