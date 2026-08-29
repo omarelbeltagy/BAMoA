@@ -264,8 +264,8 @@ async def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    pool = [(m, args.pool_variant) for m in REFERENCE_MODELS]
-    print(f"Pool variant: {args.pool_variant}  ({len(pool)} proposers)")
+    model_pool = [(m, args.pool_variant) for m in REFERENCE_MODELS]
+    print(f"Pool variant: {args.pool_variant}  ({len(model_pool)} proposers)")
 
     print("Loading WinoBias dataset...")
     dataset = load_winobias_raw()
@@ -311,9 +311,9 @@ async def main(argv=None):
         subset = []
         for key in sorted(CELL_TARGETS):
             need = max(0, CELL_TARGETS[key] - completed_per_cell.get(key, 0))
-            pool = cells_needed.get(key, [])
-            take = min(need, len(pool))
-            subset.extend(rng.sample(pool, take))
+            candidates = cells_needed.get(key, [])
+            take = min(need, len(candidates))
+            subset.extend(rng.sample(candidates, take))
         rng.shuffle(subset)
         total = len(all_results) + len(subset)
         print(f"Topping up per cell targets {CELL_TARGETS}: {len(subset)} new questions needed "
@@ -345,7 +345,7 @@ async def main(argv=None):
 
         print(f"\n[{len(completed_ids) + i + 1}/{total}] {example['wb_type']}/{example['wb_condition']}")
 
-        run_log = await run_moa(formatted["prompt"], pool=pool,
+        run_log = await run_moa(formatted["prompt"], pool=model_pool,
                                 seed=item_seed(ex_id))
 
         run_log["winobias_metadata"] = {
